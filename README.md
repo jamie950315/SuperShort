@@ -35,6 +35,14 @@ Extension behavior:
 - If the order would immediately take liquidity, Binance should reject or expire it instead of filling as taker.
 - In one-way mode, when pressing the opposite side of an existing position, the extension sends `reduceOnly=true` and caps quantity to the current position size.
 
+Auto settlement behavior:
+
+- Auto settlement places maker/GTX reduce-only TP orders for extension entry fills.
+- When a later same-direction entry changes the average open position price, the extension replaces prior auto-settlement TP orders with one new TP order.
+- The replacement TP uses the latest Binance average position entry price plus or minus the original settlement price offset.
+- Example: a long opened at 100 with a +10 settlement target creates a TP at 110. If another long opens at 90 and the average entry becomes 95, the new TP is 105. The old 110 TP is canceled before the new TP is placed.
+- Only extension auto-settlement orders with `mb_tp_` client ids are replaced by this flow.
+
 Install:
 
 1. Open `chrome://extensions` or `edge://extensions`.

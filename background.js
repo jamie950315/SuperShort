@@ -726,6 +726,10 @@ async function registerAndTryAutoSettlement({ config, symbol, plan, entryClientO
     entryOrderId: entryOrderResponse?.orderId || null,
     entryPrice: plan.entryPrice,
     settlementPrice: plan.settlementPrice,
+    settlementPriceOffset: calculateAutoSettlementPriceOffset({
+      entryPrice: plan.entryPrice,
+      settlementPrice: plan.settlementPrice
+    }),
     quantity: plan.quantity,
     placedQty: "0",
     roiPct: plan.roiPct,
@@ -1432,22 +1436,49 @@ async function processPendingSettlementWithExecution(config, pending, filters, e
       return { ok: true, pending: !terminal, status, executedQty, placedQty, placedNow: "0", watcher: execution.watcher };
     }
 
-    // For speed, rely on the entry order executedQty instead of waiting for a separate
-    // positionRisk round trip. The exit order is reduce-only, so it cannot open reverse exposure.
-    const existingExitIds = getPendingAutoSettlementExitClientOrderIds(pending);
+    const pendingExitIds = getPendingAutoSettlementExitClientOrderIds(pending);
+    const indexedAutoExitIds = (await getIndexedExitOrderIds(pending.symbol, pending.exitSide))
+      .filter(id => id.startsWith("mb_tp_"));
+    const pendingExitIdSet = new Set(pendingExitIds);
+    const foreignAutoExitIds = indexedAutoExitIds.filter(id => !pendingExitIdSet.has(id));
+    const usePositionSettlement = pending.positionSettlement === true || foreignAutoExitIds.length > 0;
+    let positionSettlement = null;
+    if (usePositionSettlement) {
+      const position = await getOneWayPosition(config, pending.symbol);
+      positionSettlement = buildPositionBasedAutoSettlement({ pending, position, filters });
+      pending.positionSettlement = true;
+      pending.settlementPriceOffset = positionSettlement.priceOffset;
+      pending.settlementPrice = positionSettlement.settlementPrice;
+      pending.quantity = positionSettlement.quantity;
+    }
+
+    // For the common single-entry path, rely on the entry order executedQty instead of
+    // waiting for a separate positionRisk round trip. When another auto TP already
+    // exists, replace it with one TP sized from the current position average.
+    const existingExitIds = positionSettlement
+      ? uniqueStrings([...pendingExitIds, ...indexedAutoExitIds])
+      : pendingExitIds;
     let baseCoveredQty = placedQty;
     let placeQty = floorToStep(remainingToPlace, filters.stepSize);
     if (existingExitIds.length) {
       const cancelResult = await cancelPendingAutoSettlementExitOrders(config, pending, existingExitIds);
       baseCoveredQty = cancelResult.executedQty;
       pending.exitClientOrderIds = [];
-      const aggregateQty = executedQty - baseCoveredQty;
-      placeQty = floorToStep(aggregateQty, filters.stepSize);
+      if (positionSettlement) {
+        placeQty = positionSettlement.quantity;
+      } else {
+        const aggregateQty = executedQty - baseCoveredQty;
+        placeQty = floorToStep(aggregateQty, filters.stepSize);
+      }
+    } else if (positionSettlement) {
+      placeQty = positionSettlement.quantity;
     }
     if (Number(placeQty) <= 0) return { ok: true, pending: true, status, executedQty, placedQty, placedNow: "0", reason: "quantity below stepSize", watcher: execution.watcher };
 
     try {
-      const reservedPlacedQty = floorToStep(baseCoveredQty + Number(placeQty), filters.stepSize);
+      const reservedPlacedQty = positionSettlement
+        ? floorToStep(executedQty, filters.stepSize)
+        : floorToStep(baseCoveredQty + Number(placeQty), filters.stepSize);
       pending.placedQty = reservedPlacedQty;
       pending.updatedAt = Date.now();
       await setSettlementFillPlacedQty(pending, reservedPlacedQty);
@@ -1508,13 +1539,53 @@ function getPendingAutoSettlementExitClientOrderIds(pending) {
 async function cancelPendingAutoSettlementExitOrders(config, pending, clientOrderIds) {
   const ids = uniqueStrings(clientOrderIds);
   if (!ids.length) return { ids: [], results: [], executedQty: 0 };
-  const results = await cancelIndexedExitOrders(config, pending.symbol, pending.exitSide, ids);
+  const results = await cancelIndexedExitOrders(config, pending.symbol, ids);
   await removeIndexedExitOrderIds(pending.symbol, pending.exitSide, ids);
   const executedQty = results.reduce((sum, item) => {
     const qty = Number(item?.response?.executedQty ?? item?.response?.cumQty ?? 0);
     return sum + (Number.isFinite(qty) && qty > 0 ? qty : 0);
   }, 0);
   return { ids, results, executedQty };
+}
+
+function calculateAutoSettlementPriceOffset({ entryPrice, settlementPrice }) {
+  const entry = Number(entryPrice);
+  const settlement = Number(settlementPrice);
+  const offset = Math.abs(settlement - entry);
+  return Number.isFinite(offset) && offset > 0 ? String(offset) : null;
+}
+
+function buildPositionBasedAutoSettlement({ pending, position, filters }) {
+  const positionAmt = Number(position?.positionAmt || 0);
+  const averagePrice = Number(position?.entryPrice || 0);
+  const positionQty = Math.abs(positionAmt);
+  const expectedLong = pending.entrySide === "BUY" && pending.exitSide === "SELL";
+  const expectedShort = pending.entrySide === "SELL" && pending.exitSide === "BUY";
+  const sameDirection = (expectedLong && positionAmt > 0) || (expectedShort && positionAmt < 0);
+  if (!sameDirection) throw new Error("Auto settlement position direction does not match entry side");
+  if (!Number.isFinite(averagePrice) || averagePrice <= 0) throw new Error("Auto settlement average entry price is unavailable");
+  if (!Number.isFinite(positionQty) || positionQty <= 0) throw new Error("Auto settlement position quantity is unavailable");
+
+  const storedOffset = Number(pending.settlementPriceOffset || 0);
+  const fallbackOffset = Number(calculateAutoSettlementPriceOffset({
+    entryPrice: pending.entryPrice,
+    settlementPrice: pending.settlementPrice
+  }) || 0);
+  const priceOffset = Number.isFinite(storedOffset) && storedOffset > 0 ? storedOffset : fallbackOffset;
+  if (!Number.isFinite(priceOffset) || priceOffset <= 0) throw new Error("Auto settlement price offset is unavailable");
+
+  const rawTarget = expectedLong ? averagePrice + priceOffset : averagePrice - priceOffset;
+  if (!Number.isFinite(rawTarget) || rawTarget <= 0) throw new Error("Invalid average-price auto settlement target");
+  const settlementPrice = expectedLong
+    ? ceilToStep(rawTarget, filters.tickSize)
+    : floorToStep(rawTarget, filters.tickSize);
+  const quantity = floorToStep(positionQty, filters.stepSize);
+  return {
+    averagePrice,
+    priceOffset: String(priceOffset),
+    quantity,
+    settlementPrice
+  };
 }
 
 async function placeAutoSettlementExitOrderWithChase({ config, pending, filters, quantity, maxRetries }) {

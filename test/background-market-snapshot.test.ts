@@ -558,6 +558,125 @@ test("auto settlement replaces prior open TP when entry fill grows", async () =>
   assert.equal(postedOrders[1].get("quantity"), "1.340");
 });
 
+test("auto settlement re-prices one TP from average position after adding at a different price", async () => {
+  const pending = {
+    id: "ps_2",
+    symbol: "BTCUSDT",
+    entrySide: "BUY",
+    exitSide: "SELL",
+    entryClientOrderId: "mb_buy_second",
+    entryPrice: "90.0",
+    settlementPrice: "100.0",
+    quantity: "1",
+    placedQty: "0",
+    roiPct: 10,
+    leverage: 1,
+    originalAmount: 90,
+    makerTicks: 1
+  };
+  const storageState: Record<string, unknown> = {
+    pendingSettlementIndex: { BTCUSDT: [pending] },
+    pendingSettlementFillIndex: {},
+    exitOrderIndex: { BTCUSDT: { SELL: ["mb_tp_sell_old"] } }
+  };
+  const postedOrders: URLSearchParams[] = [];
+  const canceledOrders: URLSearchParams[] = [];
+  const { api } = loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener() {} }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => ([{
+            symbol: "BTCUSDT",
+            positionSide: "BOTH",
+            positionAmt: "2",
+            entryPrice: "95.0",
+            breakEvenPrice: "95.0",
+            leverage: "1",
+            markPrice: "90.0",
+            unRealizedProfit: "0"
+          }])
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
+        const body = new URLSearchParams(options.body || "");
+        postedOrders.push(body);
+        return {
+          ok: true,
+          json: async () => ({
+            symbol: "BTCUSDT",
+            clientOrderId: body.get("newClientOrderId"),
+            executedQty: "0"
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "DELETE") {
+        canceledOrders.push(parsed.searchParams);
+        return {
+          ok: true,
+          json: async () => ({
+            symbol: "BTCUSDT",
+            origClientOrderId: parsed.searchParams.get("origClientOrderId"),
+            executedQty: "0"
+          })
+        };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const result = await api.processUserStreamEntryFill({
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    recvWindow: 5000
+  }, {
+    e: "ORDER_TRADE_UPDATE",
+    o: { s: "BTCUSDT", c: "mb_buy_second", x: "TRADE", X: "FILLED", z: "1", l: "1" }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(canceledOrders.length, 1);
+  assert.equal(canceledOrders[0].get("origClientOrderId"), "mb_tp_sell_old");
+  assert.equal(postedOrders.length, 1);
+  assert.equal(postedOrders[0].get("side"), "SELL");
+  assert.equal(postedOrders[0].get("quantity"), "2.000");
+  assert.equal(postedOrders[0].get("price"), "105.0");
+  assert.equal(postedOrders[0].get("reduceOnly"), "true");
+});
+
 test("entry maker order retries five times with fresh maker-safe prices after GTX rejection", async () => {
   const storageState: Record<string, unknown> = {
     apiKey: "key",

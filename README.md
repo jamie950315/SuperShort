@@ -1,18 +1,45 @@
 # SuperShort
 
-SuperShort is a live paper-trading dashboard and research workspace for Binance USD-M Futures strategy development.
+SuperShort is primarily a Binance USD-M Futures browser extension for maker/GTX post-only order experiments.
 
 The repository contains three related parts:
 
-- A TypeScript/React live dashboard and backend for Flash Point Pro v0.8 paper trading.
-- A Binance maker/GTX browser extension for post-only limit-order experiments.
+- The main Binance maker/GTX browser extension for post-only limit-order experiments.
+- A TypeScript/React live dashboard and backend for Flash Point Pro v0.8 paper trading and monitoring.
 - `CrossingFetch`, a TradingView recorder and research extension used to reconstruct and validate Flash Point behavior.
 
 ## Safety Model
 
-The dashboard/backend is paper trading only. It uses Binance live market data and a conservative maker/GTX fill model, but it does not place real orders unless real execution work is explicitly added in the future.
+The browser extension can place Binance orders when configured with credentials and Dry Run is disabled. Start with Testnet and Dry Run, use restricted Futures-only API keys, disable withdrawals, and keep API secrets out of committed files.
 
-The browser extension is separate from the dashboard and can place Binance orders when configured with credentials and Dry Run is disabled. Start with Testnet and Dry Run, use restricted Futures-only API keys, disable withdrawals, and keep API secrets out of committed files.
+The dashboard/backend is a companion paper-trading and monitoring system. It uses Binance live market data and a conservative maker/GTX fill model, but it does not place real orders unless real execution work is explicitly added in the future.
+
+## Browser Extension
+
+The root extension files are:
+
+- `manifest.json`
+- `background.js`
+- `content.js`
+- `content.css`
+- `popup.html`
+- `popup.js`
+
+Extension behavior:
+
+- BUY uses `askPrice - tickSize * (offsetTicks + 1)`.
+- SELL uses `bidPrice + tickSize * (offsetTicks + 1)`.
+- Orders are sent as `type=LIMIT` and `timeInForce=GTX`.
+- If the order would immediately take liquidity, Binance should reject or expire it instead of filling as taker.
+- In one-way mode, when pressing the opposite side of an existing position, the extension sends `reduceOnly=true` and caps quantity to the current position size.
+
+Install:
+
+1. Open `chrome://extensions` or `edge://extensions`.
+2. Enable Developer Mode.
+3. Load unpacked and select this folder.
+4. Open the extension popup and save API key/secret.
+5. Start with Testnet and Dry Run enabled.
 
 ## Flash Point Pro Baseline
 
@@ -40,13 +67,13 @@ Long  = crossover(C1, C2) and C1 < longBelow
 Short = crossunder(C1, C2) and C1 > shortAbove
 ```
 
-## Requirements
+## Dashboard Requirements
 
 - Node.js 22+
 - npm
 - SQLite support through `better-sqlite3`
 
-## Setup
+## Dashboard Setup
 
 ```bash
 npm ci
@@ -56,7 +83,7 @@ npm run build
 
 Edit `.env` locally. Do not commit real API keys, password hashes, session secrets, databases, logs, or generated output.
 
-## Environment
+## Dashboard Environment
 
 ```text
 NODE_ENV=production
@@ -117,11 +144,15 @@ node --check CrossingFetch/analysis/fit-exact-flash-point.js
 ## Project Layout
 
 ```text
-src/client/        React dashboard
-src/server/        API, worker, Binance adapter, SQLite store, paper model
+background.js      Main extension service worker
+content.js         Main extension page panel
+popup.html/js      Extension settings popup
+manifest.json      Main extension manifest
+src/client/        Companion React dashboard
+src/server/        Companion API, worker, Binance adapter, SQLite store, paper model
 src/shared/        Shared strategy and table utilities
 test/              Dashboard/backend and extension tests
-deploy/            Example systemd and tunnel deployment files
+deploy/            Example dashboard systemd and tunnel deployment files
 CrossingFetch/     TradingView recorder, Flash Point research, tests
 docs/              Design notes and implementation plans
 ```

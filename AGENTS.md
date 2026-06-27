@@ -12,13 +12,14 @@ CRITICAL INSTRUCTIONS - READ FIRST
 
 This workspace contains:
 
-- The SuperShort live paper trading dashboard and backend.
-- A Binance maker/GTX trading model.
+- The SuperShort Binance maker/GTX browser extension. This is the main product in the repo.
+- A companion live paper trading dashboard and backend.
+- A Binance maker/GTX trading model used by the extension and paper system.
 - The `CrossingFetch` TradingView recorder/research extension.
 
 Live deployment details are intentionally not stored in this public-safe file. Keep hostnames, SSH targets, private paths, database paths, domains, and operator-specific values in an uncommitted local override file.
 
-Treat this as a live paper trading system. Keep changes conservative, scoped, and verified before deployment.
+Treat extension order-placement changes and paper dashboard changes as trading-system work. Keep changes conservative, scoped, and verified before deployment.
 
 ## Flash Point Pro v0.8 Exact Baseline
 

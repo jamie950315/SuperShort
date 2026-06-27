@@ -1,8 +1,8 @@
 # Codex Handoff: SuperShort
 
-Current package: `binance-maker-extension.zip`
+Current release package: `SuperShort-extension-0.4.1.zip`
 Current extension name in `manifest.json`: `SuperShort`
-Current version in `manifest.json`: `0.3.2`
+Current version in `manifest.json`: `0.4.1`
 Extension type: Chrome/Edge Manifest V3
 Target sites: Binance Futures, TradingView (`tw.tradingview.com`, `www.tradingview.com`)
 Primary goal: ultra-fast post-only maker order workflow for Binance USD-M Futures, with full-position reduce-only exits and optional automatic settlement.

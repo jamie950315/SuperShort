@@ -1,0 +1,18 @@
+[Unit]
+Description=SuperShort Trading Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/supershort
+EnvironmentFile=/etc/supershort/supershort.env
+ExecStart=/usr/bin/npm run start:worker
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

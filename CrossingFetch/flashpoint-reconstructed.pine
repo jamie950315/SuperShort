@@ -1,0 +1,44 @@
+//@version=5
+indicator("Flash Point Pro exact reconstruction v0.8", overlay=false, precision=2)
+
+// Exact implementation from the author-provided Flash Point Pro source.
+const float MULTIPLIER = 1.0
+
+float typical_price = (2 * close + high + low) / 4
+
+hline(90, "高位超买线", color=color.new(color.red, 0))
+hline(20, "低位超卖线", color=color.new(color.green, 0))
+
+float period_lowest = ta.lowest(low, 5)
+float period_highest = ta.highest(high, 4)
+
+float price_range = period_highest - period_lowest
+float stoch_val = (price_range == 0) ? 0 : ((typical_price - period_lowest) / price_range) * 100
+
+float fast_k = ta.ema(stoch_val, 4) * MULTIPLIER
+
+float slow_d_base = 0.667 * nz(fast_k[1]) + 0.333 * fast_k
+float slow_d = ta.ema(slow_d_base, 2) * MULTIPLIER
+
+bool cross_gold = ta.crossover(fast_k, slow_d)
+bool cross_dead = ta.crossunder(fast_k, slow_d)
+
+bool cond_buy = cross_gold and fast_k < 40
+bool cond_sell_strict = cross_dead and fast_k > 90
+
+plot(fast_k, "C1快线(Fast K)", color=color.rgb(255, 0, 255), linewidth=2)
+plot(slow_d, "C2慢线(Slow D)", color=color.white, linewidth=2)
+
+plot(cross_dead ? slow_d : na, "死叉点外圈", color=color.yellow, style=plot.style_cross, linewidth=4)
+plot(cross_dead ? slow_d : na, "死叉点内芯", color=color.red, style=plot.style_circles, linewidth=2)
+
+plot(cross_gold ? fast_k : na, "金叉点外圈", color=color.red, style=plot.style_cross, linewidth=4)
+plot(cross_gold ? fast_k : na, "金叉点内芯", color=color.yellow, style=plot.style_circles, linewidth=2)
+
+plotshape(cross_gold ? fast_k : na, title="加仓文字标签", text="加仓", style=shape.labelup, location=location.absolute, color=color.new(color.red, 100), textcolor=color.red, size=size.tiny)
+plotshape(cross_dead ? slow_d : na, title="卖文字标签", text="卖", style=shape.labeldown, location=location.absolute, color=color.new(color.green, 100), textcolor=color.green, size=size.tiny)
+plotshape(cond_buy ? 20 : na, title="底部买入信号", text="买", style=shape.arrowup, location=location.absolute, color=color.new(color.white, 100), textcolor=color.white, size=size.small)
+plotshape(cond_sell_strict ? 85 : na, title="顶部卖出信号", text="卖", style=shape.arrowdown, location=location.absolute, color=color.new(color.yellow, 100), textcolor=color.yellow, size=size.small)
+
+plotchar(cross_gold ? fast_k : na, "金叉微型图标", "▲", location.absolute, color=color.red, size=size.tiny)
+plotchar(cross_dead ? slow_d : na, "死叉微型图标", "▼", location.absolute, color=color.green, size=size.tiny)

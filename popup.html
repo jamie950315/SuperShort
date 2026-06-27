@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SuperShort</title>
+  <style>
+    body { width: 360px; margin: 0; padding: 14px; background: #111722; color: #eaecef; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    h1 { font-size: 16px; margin: 0 0 12px; }
+    label { display: block; font-size: 12px; color: #a7b1bc; margin-top: 10px; }
+    input, select { width: 100%; margin-top: 5px; padding: 8px; border-radius: 8px; border: 1px solid #394150; background: #0b0f16; color: #eaecef; box-sizing: border-box; }
+    .row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: #cfd6df; }
+    .row input { width: auto; margin: 0; }
+    .input-row { display: flex; gap: 8px; margin-top: 5px; }
+    .input-row input { flex: 1; margin-top: 0; }
+    .input-row button { width: auto; margin-top: 0; padding: 8px 10px; }
+    button { width: 100%; margin-top: 12px; border: 0; border-radius: 8px; padding: 10px; background: #f0b90b; color: #111; font-weight: 700; cursor: pointer; }
+    .hint { color: #a7b1bc; font-size: 11px; line-height: 1.45; margin-top: 10px; }
+    .status { margin-top: 10px; padding: 8px; border-radius: 8px; background: #0b0f16; font-size: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>SuperShort</h1>
+  <label>API Key</label>
+  <div class="input-row">
+    <input id="apiKey" spellcheck="false" />
+    <button id="pasteApiKey" type="button">貼上</button>
+  </div>
+  <label>API Secret</label>
+  <div class="input-row">
+    <input id="apiSecret" type="password" spellcheck="false" placeholder="留空代表沿用已儲存 secret" />
+    <button id="pasteApiSecret" type="button">貼上</button>
+  </div>
+  <label>Endpoint</label>
+  <select id="baseUrl">
+    <option value="https://testnet.binancefuture.com">Testnet</option>
+    <option value="https://fapi.binance.com">Mainnet</option>
+  </select>
+  <label>本金金額（未乘槓桿，USDT/USDC）</label>
+  <input id="quoteAmount" type="number" min="0" step="1" />
+  <label>Leverage</label>
+  <input id="leverage" type="number" min="1" max="125" step="1" />
+  <label>Maker offset ticks</label>
+  <input id="offsetTicks" type="number" min="0" step="1" />
+  <label>平倉 GTX 重試次數</label>
+  <input id="exitChaseRetries" type="number" min="0" max="5" step="1" />
+  <div class="row"><input id="autoSettlementEnabled" type="checkbox" /><span>自動結算：開倉掛單成交後自動送反向 reduce-only 限價單</span></div>
+  <label>自動結算收益率 %（槓桿後，0.01–100）</label>
+  <input id="autoSettlementRoiPct" type="number" min="0.01" max="100" step="0.01" />
+  <div class="row"><input id="dryRun" type="checkbox" /><span>Dry run：只預覽，不送單</span></div>
+  <div class="row"><input id="autoReduceOnly" type="checkbox" /><span>反向按鈕自動 reduce-only（單向持倉模式）</span></div>
+  <div class="row"><input id="replaceReduceOnly" type="checkbox" /><span>平倉時替換舊 exit 單（取消同方向舊 reduce-only 單）</span></div>
+  <button id="save">儲存設定</button>
+  <div class="hint">API key 建議只開 Futures 交易權限，關閉提幣權限，先用 Testnet 和 Dry run 測試。</div>
+  <div class="status" id="status">Loading...</div>
+  <script src="popup.js"></script>
+</body>
+</html>

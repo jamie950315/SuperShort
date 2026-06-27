@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "SuperShort",
+  "version": "0.4.1",
+  "description": "Low-latency post-only maker limit buttons for Binance USD-M Futures on Binance and TradingView pages.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "https://www.binance.com/*",
+    "https://fapi.binance.com/*",
+    "https://testnet.binancefuture.com/*",
+    "wss://fstream.binance.com/*",
+    "wss://fstream.binancefuture.com/*",
+    "wss://stream.binancefuture.com/*",
+    "https://tw.tradingview.com/*",
+    "https://www.tradingview.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SuperShort"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.binance.com/*/futures/*",
+        "https://www.binance.com/en/futures/*",
+        "https://www.binance.com/zh-TC/futures/*",
+        "https://tw.tradingview.com/*",
+        "https://www.tradingview.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+#crossing-fetch-panel {
+  position: fixed;
+  z-index: 2147483647;
+  right: 18px;
+  bottom: 18px;
+  width: 310px;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid rgba(240, 185, 11, 0.45);
+  border-radius: 8px;
+  background: rgba(14, 17, 24, 0.96);
+  color: #f3f5f7;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+#crossing-fetch-panel * {
+  box-sizing: border-box;
+}
+
+.cf-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+.cf-title button,
+.cf-actions button {
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: #f0b90b;
+  color: #111;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cf-title button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: #2a303b;
+  color: #f3f5f7;
+}
+
+.cf-row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.cf-row label {
+  color: #aab3bd;
+}
+
+.cf-row select,
+.cf-row input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid #3b4350;
+  border-radius: 6px;
+  background: #0a0d13;
+  color: #f3f5f7;
+}
+
+.cf-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.cf-actions button.secondary {
+  background: #2a303b;
+  color: #f3f5f7;
+}
+
+.cf-status {
+  margin-top: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: #0a0d13;
+  color: #cbd3dc;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.cf-status strong {
+  color: #f3f5f7;
+}

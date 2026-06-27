@@ -1,0 +1,143 @@
+# SuperShort
+
+SuperShort is a live paper-trading dashboard and research workspace for Binance USD-M Futures strategy development.
+
+The repository contains three related parts:
+
+- A TypeScript/React live dashboard and backend for Flash Point Pro v0.8 paper trading.
+- A Binance maker/GTX browser extension for post-only limit-order experiments.
+- `CrossingFetch`, a TradingView recorder and research extension used to reconstruct and validate Flash Point behavior.
+
+## Safety Model
+
+The dashboard/backend is paper trading only. It uses Binance live market data and a conservative maker/GTX fill model, but it does not place real orders unless real execution work is explicitly added in the future.
+
+The browser extension is separate from the dashboard and can place Binance orders when configured with credentials and Dry Run is disabled. Start with Testnet and Dry Run, use restricted Futures-only API keys, disable withdrawals, and keep API secrets out of committed files.
+
+## Flash Point Pro Baseline
+
+Current strategy work uses the author's Flash Point Pro v0.8 exact formula:
+
+```text
+typical_price = (2 * close + high + low) / 4
+
+period_lowest  = lowest(low, 5)
+period_highest = highest(high, 4)
+
+price_range = period_highest - period_lowest
+stoch_val = price_range == 0 ? 0 : ((typical_price - period_lowest) / price_range) * 100
+
+C1 = EMA(stoch_val, 4)
+
+slow_d_base = 0.667 * previous C1 + 0.333 * current C1
+C2 = EMA(slow_d_base, 2)
+```
+
+Signal rules:
+
+```text
+Long  = crossover(C1, C2) and C1 < longBelow
+Short = crossunder(C1, C2) and C1 > shortAbove
+```
+
+## Requirements
+
+- Node.js 22+
+- npm
+- SQLite support through `better-sqlite3`
+
+## Setup
+
+```bash
+npm ci
+cp .env.example .env
+npm run build
+```
+
+Edit `.env` locally. Do not commit real API keys, password hashes, session secrets, databases, logs, or generated output.
+
+## Environment
+
+```text
+NODE_ENV=production
+PORT=8787
+DATABASE_PATH=./data/supershort.db
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+BINANCE_BASE_URL=https://fapi.binance.com
+BINANCE_WS_BASE_URL=wss://fstream.binance.com
+SYMBOL=BTCUSDC
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD_HASH=
+SESSION_SECRET=change-this-with-openssl-rand-hex-32
+```
+
+Create an admin password hash after building:
+
+```bash
+node -e "import('./dist/server/config.js').then(m => console.log(m.hashPassword(process.argv[1])))" 'YOUR_PASSWORD_HERE'
+```
+
+Generate a session secret:
+
+```bash
+openssl rand -hex 32
+```
+
+## Development
+
+Run the dashboard parts separately:
+
+```bash
+npm run dev:api
+npm run dev:worker
+npm run dev:web
+```
+
+Useful checks:
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
+`CrossingFetch` checks:
+
+```bash
+node --test CrossingFetch/test/*.test.js
+node --check CrossingFetch/flashpoint-algo.js
+node --check CrossingFetch/content.js
+node --check CrossingFetch/injected.js
+node --check CrossingFetch/core.js
+node --check CrossingFetch/analysis/flash-point-model.js
+node --check CrossingFetch/analysis/fit-exact-flash-point.js
+```
+
+## Project Layout
+
+```text
+src/client/        React dashboard
+src/server/        API, worker, Binance adapter, SQLite store, paper model
+src/shared/        Shared strategy and table utilities
+test/              Dashboard/backend and extension tests
+deploy/            Example systemd and tunnel deployment files
+CrossingFetch/     TradingView recorder, Flash Point research, tests
+docs/              Design notes and implementation plans
+```
+
+## Data And Artifacts
+
+Generated folders and local artifacts are intentionally ignored:
+
+- `node_modules/`
+- `dist/`
+- `output/`
+- `.superpowers/`
+- local `.env` files
+- SQLite databases
+- logs
+- zip archives
+- large generated backtest datasets under `CrossingFetch/analysis/backtest-data/`
+
+Keep only source, tests, safe documentation, and example configuration in git.

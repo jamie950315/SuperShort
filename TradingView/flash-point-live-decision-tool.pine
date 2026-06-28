@@ -1,5 +1,5 @@
 //@version=5
-indicator("Flash Point 即時決策工具", overlay=true, precision=2, max_labels_count=500)
+indicator("Live Decision Tool", overlay=true, precision=2, max_labels_count=500)
 
 // Flash Point Pro v0.8，依作者提供公式重建。
 flashPoint() =>
@@ -24,6 +24,7 @@ formatLevel(float value) =>
 // 顯示設定
 showTable = input.bool(true, "顯示狀態表")
 tableLocation = input.string("右上", "狀態表位置", options=["右上", "右下", "左上", "左下", "中上", "中下"])
+tableSize = input.string("一般", "狀態表大小", options=["極小", "小", "一般", "大", "特大"])
 showLiveLabel = input.bool(true, "顯示最新提示標籤")
 showMarkers = input.bool(true, "顯示進場/減倉/出場標記")
 positionMode = input.string("訊號自動追蹤", "持倉偵測模式", options=["訊號自動追蹤", "手動空倉", "手動多單", "手動空單"])
@@ -97,8 +98,9 @@ shortReason := addReason(shortReason, mainC1 < mainC2 ? "C1 低於 C2" : mainC1 
 shortReason := addReason(shortReason, earlyC1 < earlyC2 or earlyCrossDown ? "早期週期同向" : "")
 shortReason := addReason(shortReason, "空方分數 " + str.tostring(bearScore))
 
-var string autoSide = "空倉"
-manualSide = positionMode == "手動多單" ? "多單" : positionMode == "手動空單" ? "空單" : positionMode == "手動空倉" ? "空倉" : autoSide
+var string trackedSide = "空倉"
+isAutoPosition = positionMode == "訊號自動追蹤"
+positionSide = positionMode == "手動多單" ? "多單" : positionMode == "手動空單" ? "空單" : positionMode == "手動空倉" ? "空倉" : trackedSide
 
 state = "等待"
 side = ""
@@ -108,7 +110,7 @@ if not supported
     state := "未支援"
     side := ""
     reason := "沒有調校參數"
-else if manualSide == "多單"
+else if positionSide == "多單"
     side := "多單"
     if mainCrossDown and bearScore >= 4
         state := "出場"
@@ -119,7 +121,7 @@ else if manualSide == "多單"
     else
         state := "續抱"
         reason := addReason(addReason("", "趨勢仍可"), addReason("無強空方壓力", "多方分數 " + str.tostring(bullScore)))
-else if manualSide == "空單"
+else if positionSide == "空單"
     side := "空單"
     if mainCrossUp and bullScore >= 4
         state := "出場"
@@ -156,11 +158,11 @@ else
         side := "空單"
         reason := shortReason
 
-if positionMode == "訊號自動追蹤"
+if isAutoPosition and supported
     if state == "進場"
-        autoSide := side
+        trackedSide := side
     else if state == "出場"
-        autoSide := "空倉"
+        trackedSide := "空倉"
 
 signalText = supported ? labelSymbol + (side == "" ? " " : " " + side + " ") + state + "：" + reason : target + " 未支援：沒有調校參數"
 targetText = supported ? "目標：" + target + " 已套用參數 | 主週期 " + mainTf + "m | 早期週期 " + earlyTf + "m" : "目標：" + target + " 未支援"
@@ -192,22 +194,27 @@ tablePosition = tableLocation == "右上" ? position.top_right :
      tableLocation == "左下" ? position.bottom_left :
      tableLocation == "中上" ? position.top_center : position.bottom_center
 
+tableTextSize = tableSize == "極小" ? size.tiny :
+     tableSize == "小" ? size.small :
+     tableSize == "大" ? size.large :
+     tableSize == "特大" ? size.huge : size.normal
+
 var table statusTable = table.new(tablePosition, 2, 7, border_width=1)
 if showTable and barstate.islast
-    table.cell(statusTable, 0, 0, "Flash Point 即時", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 0, state, text_color=color.white, bgcolor=stateColor)
-    table.cell(statusTable, 0, 1, "目標", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 1, targetText, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 2, "提示", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 2, signalText, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 3, "C1 / C2", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 3, formatLevel(mainC1) + " / " + formatLevel(mainC2), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 4, "分數", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 4, "多 " + str.tostring(bullScore) + " | 空 " + str.tostring(bearScore), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 5, "持倉", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 5, positionMode == "訊號自動追蹤" ? "自動：" + autoSide : positionMode, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 6, "即時提醒", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 6, "盤中狀態可能在收線前改變", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 0, "Live Decision Tool", text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 0, state, text_color=color.white, bgcolor=stateColor, text_size=tableTextSize)
+    table.cell(statusTable, 0, 1, "目標", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 1, targetText, text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 0, 2, "提示", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 2, signalText, text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 0, 3, "C1 / C2", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 3, formatLevel(mainC1) + " / " + formatLevel(mainC2), text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 0, 4, "分數", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 4, "多 " + str.tostring(bullScore) + " | 空 " + str.tostring(bearScore), text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 0, 5, "持倉", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 5, isAutoPosition ? "自動：" + trackedSide : positionMode, text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 0, 6, "即時提醒", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
+    table.cell(statusTable, 1, 6, "盤中狀態可能在收線前改變", text_color=color.white, bgcolor=color.rgb(20, 24, 32), text_size=tableTextSize)
 
 alertcondition(state == "進場" and side == "多單", "Flash Point 多單進場", "Flash Point 多單進場")
 alertcondition(state == "進場" and side == "空單", "Flash Point 空單進場", "Flash Point 空單進場")

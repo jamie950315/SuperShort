@@ -137,6 +137,12 @@
     </div>
     <label>自動結算收益率 %（槓桿後）</label>
     <input id="bmw-auto-roi" type="number" min="0.01" max="100" step="0.01" />
+    <div class="bmw-small">
+      <input id="bmw-sl-order" type="checkbox" />
+      <span>SL order</span>
+    </div>
+    <label>SL order %（槓桿後）</label>
+    <input id="bmw-sl-roi" type="number" min="0.01" max="100" step="0.01" />
     <div class="bmw-auto-preview" id="bmw-auto-preview">Auto settle off</div>
     <div class="bmw-ws-status" id="bmw-ws-status">WS: --</div>
     <div class="bmw-small">
@@ -179,6 +185,8 @@
   const autoSettle = $("#bmw-auto-settle");
   const profitOnlySettle = $("#bmw-profit-only-settle");
   const autoRoi = $("#bmw-auto-roi");
+  const slOrder = $("#bmw-sl-order");
+  const slRoi = $("#bmw-sl-roi");
   const autoPreview = $("#bmw-auto-preview");
   const wsStatus = $("#bmw-ws-status");
   const dry = $("#bmw-dry");
@@ -202,6 +210,8 @@
     autoSettle.checked = Boolean(res.config.autoSettlementEnabled);
     profitOnlySettle.checked = Boolean(res.config.profitOnlySettlementEnabled);
     autoRoi.value = res.config.autoSettlementRoiPct ?? "1";
+    slOrder.checked = Boolean(res.config.slOrderEnabled);
+    slRoi.value = res.config.slOrderRoiPct ?? "1";
     dry.checked = Boolean(res.config.dryRun);
     reduce.checked = Boolean(res.config.autoReduceOnly);
     replace.checked = Boolean(res.config.replaceReduceOnly);
@@ -230,7 +240,7 @@
   });
   installSymbolAutoDetect();
 
-  for (const el of [amount, leverage, offset, exitChase, autoSettle, profitOnlySettle, autoRoi, dry, reduce, replace]) {
+  for (const el of [amount, leverage, offset, exitChase, autoSettle, profitOnlySettle, autoRoi, slOrder, slRoi, dry, reduce, replace]) {
     el.addEventListener("change", saveLocalConfig);
   }
 
@@ -246,6 +256,8 @@
         autoSettlementEnabled: autoSettle.checked,
         profitOnlySettlementEnabled: profitOnlySettle.checked,
         autoSettlementRoiPct: autoRoi.value,
+        slOrderEnabled: slOrder.checked,
+        slOrderRoiPct: slRoi.value,
         dryRun: dry.checked,
         autoReduceOnly: reduce.checked,
         replaceReduceOnly: replace.checked
@@ -271,6 +283,8 @@
       exitChaseRetries: exitChase.value,
       autoSettlementEnabled: autoSettle.checked,
       autoSettlementRoiPct: autoRoi.value,
+      slOrderEnabled: slOrder.checked,
+      slOrderRoiPct: slRoi.value,
       profitOnlySettlementEnabled: profitOnlySettle.checked,
       autoReduceOnly: reduce.checked,
       replaceReduceOnly: replace.checked,
@@ -295,6 +309,9 @@
       ];
       if (o.autoSettlement?.enabled) {
         lines.push(`autoSettle ${o.autoSettlement.exitSide} @ ${o.autoSettlement.settlementPrice}, expectedProfit=${o.autoSettlement.expectedProfit}`);
+      }
+      if (o.slOrder?.enabled) {
+        lines.push(`SL ${o.slOrder.exitSide} stop ${o.slOrder.triggerPrice} → ${o.slOrder.slPrice}, expectedLoss=${o.slOrder.expectedLoss}`);
       }
       if (o.positionSource) {
         lines.push(`positionSource=${o.positionSource}${Number.isFinite(Number(o.positionAgeMs)) ? ` age=${Math.round(Number(o.positionAgeMs))}ms` : ""}`);

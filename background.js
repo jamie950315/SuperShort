@@ -8,6 +8,8 @@ const DEFAULTS = {
   exitChaseRetries: 2,
   autoSettlementEnabled: false,
   autoSettlementRoiPct: "1",
+  slOrderEnabled: false,
+  slOrderRoiPct: "1",
   profitOnlySettlementEnabled: false,
   pendingSettlementIndex: {},
   dryRun: true,
@@ -18,7 +20,7 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.2";
+const EXTENSION_VERSION = "0.4.3";
 const EXCHANGE_INFO_CACHE = new Map();
 const POSITION_CACHE = new Map();
 const POSITION_CACHE_TTL_MS = 30000;
@@ -130,6 +132,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           exitChaseRetries: msg.exitChaseRetries,
           autoSettlementEnabled: msg.autoSettlementEnabled,
           autoSettlementRoiPct: msg.autoSettlementRoiPct,
+          slOrderEnabled: msg.slOrderEnabled,
+          slOrderRoiPct: msg.slOrderRoiPct,
           profitOnlySettlementEnabled: msg.profitOnlySettlementEnabled,
           autoReduceOnly: msg.autoReduceOnly,
           replaceReduceOnly: msg.replaceReduceOnly,
@@ -171,6 +175,8 @@ function cleanConfig(input) {
   if (input.exitChaseRetries !== undefined) out.exitChaseRetries = Math.min(5, Math.max(0, Math.floor(Number(input.exitChaseRetries) || 0)));
   if (input.autoSettlementEnabled !== undefined) out.autoSettlementEnabled = Boolean(input.autoSettlementEnabled);
   if (input.autoSettlementRoiPct !== undefined) out.autoSettlementRoiPct = normalizeRoiPct(input.autoSettlementRoiPct);
+  if (input.slOrderEnabled !== undefined) out.slOrderEnabled = Boolean(input.slOrderEnabled);
+  if (input.slOrderRoiPct !== undefined) out.slOrderRoiPct = normalizeRoiPct(input.slOrderRoiPct);
   if (input.profitOnlySettlementEnabled !== undefined) out.profitOnlySettlementEnabled = Boolean(input.profitOnlySettlementEnabled);
   if (input.dryRun !== undefined) out.dryRun = Boolean(input.dryRun);
   if (input.autoReduceOnly !== undefined) out.autoReduceOnly = Boolean(input.autoReduceOnly);
@@ -225,7 +231,7 @@ async function warmupSymbol(symbol) {
   await Promise.allSettled(tasks);
 }
 
-async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTicks, exitChaseRetries, autoSettlementEnabled, autoSettlementRoiPct, profitOnlySettlementEnabled, autoReduceOnly, replaceReduceOnly, dryRun }) {
+async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTicks, exitChaseRetries, autoSettlementEnabled, autoSettlementRoiPct, slOrderEnabled, slOrderRoiPct, profitOnlySettlementEnabled, autoReduceOnly, replaceReduceOnly, dryRun }) {
   const config = await getConfigRaw();
   if (!config.apiKey || !config.apiSecret) throw new Error("API key/secret not configured");
   if (side !== "BUY" && side !== "SELL") throw new Error("side must be BUY or SELL");
@@ -243,6 +249,8 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
   const effectiveExitChaseRetries = Math.min(5, Math.max(0, Math.floor(Number(exitChaseRetries ?? config.exitChaseRetries) || 0)));
   const effectiveAutoSettlementEnabled = autoSettlementEnabled === undefined ? Boolean(config.autoSettlementEnabled) : Boolean(autoSettlementEnabled);
   const effectiveAutoSettlementRoiPct = Number(normalizeRoiPct(autoSettlementRoiPct ?? config.autoSettlementRoiPct));
+  const effectiveSlOrderEnabled = slOrderEnabled === undefined ? Boolean(config.slOrderEnabled) : Boolean(slOrderEnabled);
+  const effectiveSlOrderRoiPct = Number(normalizeRoiPct(slOrderRoiPct ?? config.slOrderRoiPct));
   const effectiveProfitOnlySettlementEnabled = profitOnlySettlementEnabled === undefined
     ? Boolean(config.profitOnlySettlementEnabled)
     : Boolean(profitOnlySettlementEnabled);
@@ -324,6 +332,19 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
         makerTicks
       })
     : { enabled: false, reason: reduceOnly ? "reduce-only exit" : "disabled" };
+  let slOrderPlan = !reduceOnly && effectiveSlOrderEnabled
+    ? buildSlOrderPlan({
+        symbol,
+        entrySide: side,
+        entryPrice: protectedInitialPrice.price,
+        quantity,
+        originalAmount: quoteAmount,
+        leverage,
+        roiPct: effectiveSlOrderRoiPct,
+        filters,
+        makerTicks
+      })
+    : { enabled: false, reason: reduceOnly ? "reduce-only exit" : "disabled" };
 
   const replacementInfo = reduceOnly && effectiveReplaceReduceOnly
     ? await getExitReplacementOrderIds(config, symbol, side, liveReplacementIdsPromise)
@@ -376,7 +397,8 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
     positionAgeMs: positionResult.ageMs,
     baseUrl: config.baseUrl,
     newClientOrderId,
-    autoSettlement: autoSettlementPlan
+    autoSettlement: autoSettlementPlan,
+    slOrder: slOrderPlan
   };
   preview.profitOnlySettlementEnabled = reduceOnly && effectiveProfitOnlySettlementEnabled;
   preview.profitOnlySettlementAdjusted = protectedInitialPrice.adjusted;
@@ -453,24 +475,40 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
   }
 
   let autoSettlementResult = null;
-  if (!reduceOnly && autoSettlementPlan.enabled) {
+  if (!reduceOnly && (autoSettlementPlan.enabled || slOrderPlan.enabled)) {
     if (String(autoSettlementPlan.entryPrice) !== String(entryRetry.finalPrice)) {
-      autoSettlementPlan = buildAutoSettlementPlan({
-        symbol,
-        entrySide: side,
-        entryPrice: entryRetry.finalPrice,
-        quantity,
-        originalAmount: quoteAmount,
-        leverage,
-        roiPct: effectiveAutoSettlementRoiPct,
-        filters,
-        makerTicks
-      });
+      if (autoSettlementPlan.enabled) {
+        autoSettlementPlan = buildAutoSettlementPlan({
+          symbol,
+          entrySide: side,
+          entryPrice: entryRetry.finalPrice,
+          quantity,
+          originalAmount: quoteAmount,
+          leverage,
+          roiPct: effectiveAutoSettlementRoiPct,
+          filters,
+          makerTicks
+        });
+      }
+      if (slOrderPlan.enabled) {
+        slOrderPlan = buildSlOrderPlan({
+          symbol,
+          entrySide: side,
+          entryPrice: entryRetry.finalPrice,
+          quantity,
+          originalAmount: quoteAmount,
+          leverage,
+          roiPct: effectiveSlOrderRoiPct,
+          filters,
+          makerTicks
+        });
+      }
     }
     autoSettlementResult = await registerAndTryAutoSettlement({
       config,
       symbol,
       plan: autoSettlementPlan,
+      slOrderPlan,
       entryClientOrderId: finalClientOrderId,
       entryOrderResponse: response,
       filters
@@ -486,6 +524,7 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
   preview.exitChaseAttempts = exitChase.attempts || 0;
   preview.entryRetryAttempts = entryRetry.attempts || 0;
   preview.autoSettlement = autoSettlementPlan;
+  preview.slOrder = slOrderPlan;
   if (finalOrder.profitOnlySettlement) {
     preview.profitOnlySettlementAdjusted = Boolean(finalOrder.profitOnlySettlement.adjusted);
     preview.profitOnlySettlementAveragePrice = finalOrder.profitOnlySettlement.averagePrice;
@@ -700,6 +739,7 @@ function buildAutoSettlementPlan({ symbol, entrySide, entryPrice, quantity, orig
   const expectedProfitByPrice = Math.abs(Number(settlementPrice) - entry) * qty;
   return {
     enabled: true,
+    settlementEnabled: true,
     symbol,
     entrySide,
     exitSide,
@@ -716,26 +756,83 @@ function buildAutoSettlementPlan({ symbol, entrySide, entryPrice, quantity, orig
   };
 }
 
-async function registerAndTryAutoSettlement({ config, symbol, plan, entryClientOrderId, entryOrderResponse, filters }) {
+function buildSlOrderPlan({ symbol, entrySide, entryPrice, quantity, originalAmount, leverage, roiPct, filters, makerTicks }) {
+  const entry = Number(entryPrice);
+  const qty = Number(quantity);
+  const lev = clampLeverage(leverage);
+  const roi = Number(normalizeRoiPct(roiPct));
+  const underlyingMove = roi / 100 / lev;
+  const exitSide = entrySide === "BUY" ? "SELL" : "BUY";
+  const rawTarget = entrySide === "BUY"
+    ? entry * (1 - underlyingMove)
+    : entry * (1 + underlyingMove);
+  if (!Number.isFinite(rawTarget) || rawTarget <= 0) throw new Error("Invalid SL order price");
+  const slPrice = exitSide === "SELL"
+    ? floorToStep(rawTarget, filters.tickSize)
+    : ceilToStep(rawTarget, filters.tickSize);
+  const triggerPrice = midpointTriggerPrice({ entryPrice: entry, slPrice, side: exitSide, filters });
+  const expectedLossByInput = Number(originalAmount) * roi / 100;
+  const expectedLossByPrice = Math.abs(Number(slPrice) - entry) * qty;
+  return {
+    enabled: true,
+    symbol,
+    entrySide,
+    exitSide,
+    entryPrice: String(entryPrice),
+    slPrice,
+    triggerPrice,
+    slPriceOffset: calculateAutoSettlementPriceOffset({
+      entryPrice,
+      settlementPrice: slPrice
+    }),
+    quantity: String(quantity),
+    originalAmount: Number(originalAmount),
+    leverage: lev,
+    roiPct: roi,
+    underlyingMovePct: underlyingMove * 100,
+    expectedLoss: expectedLossByInput.toFixed(4),
+    expectedLossByPrice: expectedLossByPrice.toFixed(4),
+    makerTicks
+  };
+}
+
+function midpointTriggerPrice({ entryPrice, slPrice, side, filters }) {
+  const midpoint = (Number(entryPrice) + Number(slPrice)) / 2;
+  if (!Number.isFinite(midpoint) || midpoint <= 0) throw new Error("Invalid SL trigger price");
+  return side === "SELL"
+    ? floorToStep(midpoint, filters.tickSize)
+    : ceilToStep(midpoint, filters.tickSize);
+}
+
+async function registerAndTryAutoSettlement({ config, symbol, plan, slOrderPlan, entryClientOrderId, entryOrderResponse, filters }) {
+  const exitSide = plan.enabled ? plan.exitSide : slOrderPlan.exitSide;
   const pending = {
     id: makePendingSettlementId(),
     symbol,
-    entrySide: plan.entrySide,
-    exitSide: plan.exitSide,
+    entrySide: plan.enabled ? plan.entrySide : slOrderPlan.entrySide,
+    exitSide,
     entryClientOrderId,
     entryOrderId: entryOrderResponse?.orderId || null,
-    entryPrice: plan.entryPrice,
-    settlementPrice: plan.settlementPrice,
-    settlementPriceOffset: calculateAutoSettlementPriceOffset({
+    entryPrice: plan.enabled ? plan.entryPrice : slOrderPlan.entryPrice,
+    settlementEnabled: Boolean(plan.enabled),
+    settlementPrice: plan.enabled ? plan.settlementPrice : null,
+    settlementPriceOffset: plan.enabled ? calculateAutoSettlementPriceOffset({
       entryPrice: plan.entryPrice,
       settlementPrice: plan.settlementPrice
-    }),
-    quantity: plan.quantity,
+    }) : null,
+    quantity: plan.enabled ? plan.quantity : slOrderPlan.quantity,
     placedQty: "0",
-    roiPct: plan.roiPct,
-    leverage: plan.leverage,
-    originalAmount: plan.originalAmount,
-    makerTicks: plan.makerTicks,
+    roiPct: plan.enabled ? plan.roiPct : null,
+    leverage: plan.enabled ? plan.leverage : slOrderPlan.leverage,
+    originalAmount: plan.enabled ? plan.originalAmount : slOrderPlan.originalAmount,
+    makerTicks: plan.enabled ? plan.makerTicks : slOrderPlan.makerTicks,
+    slOrderEnabled: Boolean(slOrderPlan?.enabled),
+    slOrderRoiPct: slOrderPlan?.enabled ? slOrderPlan.roiPct : null,
+    slPrice: slOrderPlan?.enabled ? slOrderPlan.slPrice : null,
+    slTriggerPrice: slOrderPlan?.enabled ? slOrderPlan.triggerPrice : null,
+    slPriceOffset: slOrderPlan?.enabled ? slOrderPlan.slPriceOffset : null,
+    slPlacedQty: "0",
+    slClientAlgoIds: [],
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
@@ -1416,118 +1513,168 @@ async function processPendingSettlementWithExecution(config, pending, filters, e
 
   try {
     const executedQty = Number(execution.executedQty || 0);
-    const pendingPlacedQty = Number(pending.placedQty || 0);
-    const ledgerPlacedQty = await getSettlementFillPlacedQty(pending);
-    const placedQty = Math.max(
-      Number.isFinite(pendingPlacedQty) ? pendingPlacedQty : 0,
-      ledgerPlacedQty
-    );
-    const remainingToPlace = executedQty - placedQty;
     const status = String(execution.status || "");
+    const tpEnabled = isPendingAutoSettlementEnabled(pending);
+    const slEnabled = Boolean(pending.slOrderEnabled);
+    let result = {
+      ok: true,
+      pending: true,
+      status,
+      executedQty,
+      placedQty: Number(pending.placedQty || 0),
+      placedNow: "0",
+      watcher: execution.watcher
+    };
 
-    if (remainingToPlace <= Number(filters.stepSize) / 2) {
-      const terminal = ["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(status);
-      if (!terminal && Number(pending.placedQty || 0) < placedQty) {
-        pending.placedQty = floorToStep(placedQty, filters.stepSize);
-        pending.updatedAt = Date.now();
-        await updatePendingSettlement(pending);
-      }
-      if (terminal) await removePendingSettlement(pending);
-      return { ok: true, pending: !terminal, status, executedQty, placedQty, placedNow: "0", watcher: execution.watcher };
-    }
-
-    const pendingExitIds = getPendingAutoSettlementExitClientOrderIds(pending);
-    const indexedAutoExitIds = (await getIndexedExitOrderIds(pending.symbol, pending.exitSide))
-      .filter(id => id.startsWith("mb_tp_"));
-    const pendingExitIdSet = new Set(pendingExitIds);
-    const foreignAutoExitIds = indexedAutoExitIds.filter(id => !pendingExitIdSet.has(id));
-    const usePositionSettlement = pending.positionSettlement === true || foreignAutoExitIds.length > 0;
-    let positionSettlement = null;
-    if (usePositionSettlement) {
-      const position = await getOneWayPosition(config, pending.symbol);
-      positionSettlement = buildPositionBasedAutoSettlement({ pending, position, filters });
-      pending.positionSettlement = true;
-      pending.settlementPriceOffset = positionSettlement.priceOffset;
-      pending.settlementPrice = positionSettlement.settlementPrice;
-      pending.quantity = positionSettlement.quantity;
-    }
-
-    // For the common single-entry path, rely on the entry order executedQty instead of
-    // waiting for a separate positionRisk round trip. When another auto TP already
-    // exists, replace it with one TP sized from the current position average.
-    const existingExitIds = positionSettlement
-      ? uniqueStrings([...pendingExitIds, ...indexedAutoExitIds])
-      : pendingExitIds;
-    let baseCoveredQty = placedQty;
-    let placeQty = floorToStep(remainingToPlace, filters.stepSize);
-    if (existingExitIds.length) {
-      const cancelResult = await cancelPendingAutoSettlementExitOrders(config, pending, existingExitIds);
-      baseCoveredQty = cancelResult.executedQty;
-      pending.exitClientOrderIds = [];
-      if (positionSettlement) {
-        placeQty = positionSettlement.quantity;
-      } else {
-        const aggregateQty = executedQty - baseCoveredQty;
-        placeQty = floorToStep(aggregateQty, filters.stepSize);
-      }
-    } else if (positionSettlement) {
-      placeQty = positionSettlement.quantity;
-    }
-    if (Number(placeQty) <= 0) return { ok: true, pending: true, status, executedQty, placedQty, placedNow: "0", reason: "quantity below stepSize", watcher: execution.watcher };
-
-    try {
-      const reservedPlacedQty = positionSettlement
-        ? floorToStep(executedQty, filters.stepSize)
-        : floorToStep(baseCoveredQty + Number(placeQty), filters.stepSize);
-      pending.placedQty = reservedPlacedQty;
-      pending.updatedAt = Date.now();
-      await setSettlementFillPlacedQty(pending, reservedPlacedQty);
-
-      const placed = await placeAutoSettlementExitOrderWithChase({
-        config,
-        pending,
-        filters,
-        quantity: placeQty,
-        maxRetries: 2
-      });
-
-      await addIndexedExitOrderId(pending.symbol, pending.exitSide, placed.clientOrderId);
-      pending.exitClientOrderIds = [placed.clientOrderId];
-      delete pending.nextAttemptAt;
-
-      if (["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(status) && Number(pending.placedQty) >= executedQty - Number(filters.stepSize) / 2) {
-        await removePendingSettlement(pending);
-      } else {
-        await updatePendingSettlement(pending);
-      }
-
-      return {
-        ok: true,
-        pending: true,
-        status,
-        executedQty,
-        placedQty: pending.placedQty,
-        placedNow: placeQty,
-        settlementPrice: placed.price,
-        attempts: placed.attempts,
-        response: placed.response,
-        watcher: execution.watcher
+    if (tpEnabled) {
+      result = {
+        ...result,
+        ...(await processPendingTpSettlement(config, pending, filters, { executedQty, status, watcher: execution.watcher }))
       };
-    } catch (err) {
-      pending.placedQty = floorToStep(baseCoveredQty, filters.stepSize);
-      await setSettlementFillPlacedQty(pending, pending.placedQty);
-      // If Binance has not exposed the just-filled position to reduce-only validation yet,
-      // keep the pending item alive and let the watcher/fallback retry on the next event.
-      if (isReduceOnlyRejectError(err) || isGtxRejectError(err)) {
-        pending.updatedAt = Date.now();
-        pending.nextAttemptAt = pending.updatedAt + AUTO_SETTLEMENT_RETRY_COOLDOWN_MS;
-        await updatePendingSettlement(pending);
-        return { ok: false, pending: true, status, executedQty, placedQty, placedNow: "0", retryable: true, nextAttemptAt: pending.nextAttemptAt, error: err?.message || String(err), code: err?.code, watcher: execution.watcher };
-      }
-      throw err;
+    } else if (!slEnabled) {
+      const terminal = ["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(status);
+      if (terminal) await removePendingSettlement(pending);
+      return { ...result, pending: !terminal };
     }
+
+    if (slEnabled) {
+      const slResult = await processPendingSlOrder(config, pending, filters, { executedQty, status, watcher: execution.watcher });
+      result = {
+        ...result,
+        pending: result.pending && slResult.pending,
+        slOrder: slResult,
+        slPlacedQty: slResult.slPlacedQty,
+        slPrice: slResult.slPrice,
+        slTriggerPrice: slResult.triggerPrice
+      };
+      if (slResult.ok === false) {
+        return {
+          ...result,
+          ok: false,
+          pending: true,
+          retryable: slResult.retryable,
+          error: slResult.error,
+          code: slResult.code
+        };
+      }
+    }
+
+    return result;
   } finally {
     PENDING_SETTLEMENT_PROCESSING.delete(key);
+  }
+}
+
+function isPendingAutoSettlementEnabled(pending) {
+  return pending?.settlementEnabled !== false && Boolean(pending?.settlementPrice) && Boolean(pending?.exitSide);
+}
+
+async function processPendingTpSettlement(config, pending, filters, execution) {
+  const executedQty = Number(execution.executedQty || 0);
+  const pendingPlacedQty = Number(pending.placedQty || 0);
+  const ledgerPlacedQty = await getSettlementFillPlacedQty(pending);
+  const placedQty = Math.max(
+    Number.isFinite(pendingPlacedQty) ? pendingPlacedQty : 0,
+    ledgerPlacedQty
+  );
+  const remainingToPlace = executedQty - placedQty;
+  const status = String(execution.status || "");
+
+  if (remainingToPlace <= Number(filters.stepSize) / 2) {
+    const terminal = ["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(status);
+    if (!terminal && Number(pending.placedQty || 0) < placedQty) {
+      pending.placedQty = floorToStep(placedQty, filters.stepSize);
+      pending.updatedAt = Date.now();
+      await updatePendingSettlement(pending);
+    }
+    if (terminal && !pending.slOrderEnabled) await removePendingSettlement(pending);
+    return { ok: true, pending: !terminal || Boolean(pending.slOrderEnabled), status, executedQty, placedQty, placedNow: "0", watcher: execution.watcher };
+  }
+
+  const pendingExitIds = getPendingAutoSettlementExitClientOrderIds(pending);
+  const indexedAutoExitIds = (await getIndexedExitOrderIds(pending.symbol, pending.exitSide))
+    .filter(id => id.startsWith("mb_tp_"));
+  const pendingExitIdSet = new Set(pendingExitIds);
+  const foreignAutoExitIds = indexedAutoExitIds.filter(id => !pendingExitIdSet.has(id));
+  const usePositionSettlement = pending.positionSettlement === true || foreignAutoExitIds.length > 0;
+  let positionSettlement = null;
+  if (usePositionSettlement) {
+    const position = await getOneWayPosition(config, pending.symbol);
+    positionSettlement = buildPositionBasedAutoSettlement({ pending, position, filters });
+    pending.positionSettlement = true;
+    pending.settlementPriceOffset = positionSettlement.priceOffset;
+    pending.settlementPrice = positionSettlement.settlementPrice;
+    pending.quantity = positionSettlement.quantity;
+  }
+
+  const existingExitIds = positionSettlement
+    ? uniqueStrings([...pendingExitIds, ...indexedAutoExitIds])
+    : pendingExitIds;
+  let baseCoveredQty = placedQty;
+  let placeQty = floorToStep(remainingToPlace, filters.stepSize);
+  if (existingExitIds.length) {
+    const cancelResult = await cancelPendingAutoSettlementExitOrders(config, pending, existingExitIds);
+    baseCoveredQty = cancelResult.executedQty;
+    pending.exitClientOrderIds = [];
+    if (positionSettlement) {
+      placeQty = positionSettlement.quantity;
+    } else {
+      const aggregateQty = executedQty - baseCoveredQty;
+      placeQty = floorToStep(aggregateQty, filters.stepSize);
+    }
+  } else if (positionSettlement) {
+    placeQty = positionSettlement.quantity;
+  }
+  if (Number(placeQty) <= 0) return { ok: true, pending: true, status, executedQty, placedQty, placedNow: "0", reason: "quantity below stepSize", watcher: execution.watcher };
+
+  try {
+    const reservedPlacedQty = positionSettlement
+      ? floorToStep(executedQty, filters.stepSize)
+      : floorToStep(baseCoveredQty + Number(placeQty), filters.stepSize);
+    pending.placedQty = reservedPlacedQty;
+    pending.updatedAt = Date.now();
+    await setSettlementFillPlacedQty(pending, reservedPlacedQty);
+
+    const placed = await placeAutoSettlementExitOrderWithChase({
+      config,
+      pending,
+      filters,
+      quantity: placeQty,
+      maxRetries: 2
+    });
+
+    await addIndexedExitOrderId(pending.symbol, pending.exitSide, placed.clientOrderId);
+    pending.exitClientOrderIds = [placed.clientOrderId];
+    delete pending.nextAttemptAt;
+
+    if (["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(status) && Number(pending.placedQty) >= executedQty - Number(filters.stepSize) / 2 && !pending.slOrderEnabled) {
+      await removePendingSettlement(pending);
+    } else {
+      await updatePendingSettlement(pending);
+    }
+
+    return {
+      ok: true,
+      pending: true,
+      status,
+      executedQty,
+      placedQty: pending.placedQty,
+      placedNow: placeQty,
+      settlementPrice: placed.price,
+      attempts: placed.attempts,
+      response: placed.response,
+      watcher: execution.watcher
+    };
+  } catch (err) {
+    pending.placedQty = floorToStep(baseCoveredQty, filters.stepSize);
+    await setSettlementFillPlacedQty(pending, pending.placedQty);
+    if (isReduceOnlyRejectError(err) || isGtxRejectError(err)) {
+      pending.updatedAt = Date.now();
+      pending.nextAttemptAt = pending.updatedAt + AUTO_SETTLEMENT_RETRY_COOLDOWN_MS;
+      await updatePendingSettlement(pending);
+      return { ok: false, pending: true, status, executedQty, placedQty, placedNow: "0", retryable: true, nextAttemptAt: pending.nextAttemptAt, error: err?.message || String(err), code: err?.code, watcher: execution.watcher };
+    }
+    throw err;
   }
 }
 
@@ -1586,6 +1733,156 @@ function buildPositionBasedAutoSettlement({ pending, position, filters }) {
     quantity,
     settlementPrice
   };
+}
+
+async function processPendingSlOrder(config, pending, filters, execution) {
+  const executedQty = Number(execution.executedQty || 0);
+  if (!Number.isFinite(executedQty) || executedQty <= Number(filters.stepSize) / 2) {
+    return { ok: true, pending: true, slPlacedQty: pending.slPlacedQty || "0", placedNow: "0", reason: "no executed quantity" };
+  }
+
+  try {
+    const position = await getOneWayPosition(config, pending.symbol);
+    const slOrder = buildPositionBasedSlOrder({ pending, position, filters });
+    const existingIds = uniqueStrings([
+      ...getPendingSlOrderClientAlgoIds(pending),
+      ...(await getIndexedExitOrderIds(pending.symbol, pending.exitSide)).filter(id => id.startsWith("mb_sl_"))
+    ]);
+    const currentSlPlacedQty = Number(pending.slPlacedQty || 0);
+    const sameOrderAlreadyPlaced = currentSlPlacedQty >= Number(slOrder.quantity) - Number(filters.stepSize) / 2
+      && String(pending.slPrice || "") === String(slOrder.slPrice)
+      && String(pending.slTriggerPrice || "") === String(slOrder.triggerPrice)
+      && existingIds.length > 0;
+    if (sameOrderAlreadyPlaced) {
+      return {
+        ok: true,
+        pending: true,
+        slPlacedQty: pending.slPlacedQty,
+        slPrice: pending.slPrice,
+        triggerPrice: pending.slTriggerPrice,
+        placedNow: "0",
+        reason: "already placed"
+      };
+    }
+
+    if (existingIds.length) {
+      await cancelPendingSlAlgoOrders(config, pending, existingIds);
+      pending.slClientAlgoIds = [];
+    }
+
+    const placed = await placeSlAlgoOrder({ config, pending, slOrder });
+    await addIndexedExitOrderId(pending.symbol, pending.exitSide, placed.clientAlgoId);
+    pending.slClientAlgoIds = [placed.clientAlgoId];
+    pending.slPlacedQty = slOrder.quantity;
+    pending.slPrice = slOrder.slPrice;
+    pending.slTriggerPrice = slOrder.triggerPrice;
+    pending.slPriceOffset = slOrder.priceOffset;
+    pending.updatedAt = Date.now();
+    delete pending.nextAttemptAt;
+
+    const terminal = ["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(String(execution.status || ""));
+    const tpComplete = !isPendingAutoSettlementEnabled(pending)
+      || Number(pending.placedQty || 0) >= executedQty - Number(filters.stepSize) / 2;
+    if (terminal && tpComplete) await removePendingSettlement(pending);
+    else await updatePendingSettlement(pending);
+
+    return {
+      ok: true,
+      pending: !(terminal && tpComplete),
+      slPlacedQty: slOrder.quantity,
+      slPrice: slOrder.slPrice,
+      triggerPrice: slOrder.triggerPrice,
+      placedNow: slOrder.quantity,
+      clientAlgoId: placed.clientAlgoId,
+      response: placed.response
+    };
+  } catch (err) {
+    if (isReduceOnlyRejectError(err) || isGtxRejectError(err)) {
+      pending.updatedAt = Date.now();
+      pending.nextAttemptAt = pending.updatedAt + AUTO_SETTLEMENT_RETRY_COOLDOWN_MS;
+      await updatePendingSettlement(pending);
+      return { ok: false, pending: true, retryable: true, slPlacedQty: pending.slPlacedQty || "0", placedNow: "0", nextAttemptAt: pending.nextAttemptAt, error: err?.message || String(err), code: err?.code };
+    }
+    throw err;
+  }
+}
+
+function getPendingSlOrderClientAlgoIds(pending) {
+  return uniqueStrings(pending?.slClientAlgoIds)
+    .filter(id => id.startsWith("mb_sl_"));
+}
+
+function buildPositionBasedSlOrder({ pending, position, filters }) {
+  const positionAmt = Number(position?.positionAmt || 0);
+  const averagePrice = Number(position?.entryPrice || 0);
+  const positionQty = Math.abs(positionAmt);
+  const expectedLong = pending.entrySide === "BUY" && pending.exitSide === "SELL";
+  const expectedShort = pending.entrySide === "SELL" && pending.exitSide === "BUY";
+  const sameDirection = (expectedLong && positionAmt > 0) || (expectedShort && positionAmt < 0);
+  if (!sameDirection) throw new Error("SL order position direction does not match entry side");
+  if (!Number.isFinite(averagePrice) || averagePrice <= 0) throw new Error("SL order average entry price is unavailable");
+  if (!Number.isFinite(positionQty) || positionQty <= 0) throw new Error("SL order position quantity is unavailable");
+
+  const storedOffset = Number(pending.slPriceOffset || 0);
+  const fallbackOffset = Number(calculateAutoSettlementPriceOffset({
+    entryPrice: pending.entryPrice,
+    settlementPrice: pending.slPrice
+  }) || 0);
+  const priceOffset = Number.isFinite(storedOffset) && storedOffset > 0 ? storedOffset : fallbackOffset;
+  if (!Number.isFinite(priceOffset) || priceOffset <= 0) throw new Error("SL order price offset is unavailable");
+
+  const rawTarget = expectedLong ? averagePrice - priceOffset : averagePrice + priceOffset;
+  if (!Number.isFinite(rawTarget) || rawTarget <= 0) throw new Error("Invalid average-price SL order target");
+  const slPrice = expectedLong
+    ? floorToStep(rawTarget, filters.tickSize)
+    : ceilToStep(rawTarget, filters.tickSize);
+  const triggerPrice = midpointTriggerPrice({
+    entryPrice: averagePrice,
+    slPrice,
+    side: pending.exitSide,
+    filters
+  });
+  const quantity = floorToStep(positionQty, filters.stepSize);
+  return {
+    averagePrice,
+    priceOffset: String(priceOffset),
+    quantity,
+    slPrice,
+    triggerPrice
+  };
+}
+
+async function placeSlAlgoOrder({ config, pending, slOrder }) {
+  const clientAlgoId = makeSlClientAlgoId(pending.exitSide);
+  const order = {
+    symbol: pending.symbol,
+    side: pending.exitSide,
+    algoType: "CONDITIONAL",
+    type: "STOP",
+    timeInForce: "GTX",
+    quantity: slOrder.quantity,
+    price: slOrder.slPrice,
+    triggerPrice: slOrder.triggerPrice,
+    reduceOnly: "true",
+    workingType: "CONTRACT_PRICE",
+    recvWindow: config.recvWindow,
+    clientAlgoId
+  };
+  const response = await signedRequest(config, "POST", "/fapi/v1/algoOrder", order);
+  return { response, clientAlgoId };
+}
+
+async function cancelPendingSlAlgoOrders(config, pending, clientAlgoIds) {
+  const ids = uniqueStrings(clientAlgoIds);
+  const settled = await Promise.allSettled(ids.map(clientAlgoId => (
+    signedRequest(config, "DELETE", "/fapi/v1/algoOrder", {
+      clientAlgoId,
+      recvWindow: config.recvWindow
+    })
+  )));
+  const results = settled.map((result, index) => normalizeCancelResult(result, ids[index], false));
+  await removeIndexedExitOrderIds(pending.symbol, pending.exitSide, ids);
+  return results;
 }
 
 async function placeAutoSettlementExitOrderWithChase({ config, pending, filters, quantity, maxRetries }) {
@@ -1649,6 +1946,11 @@ function adjustSettlementPriceForMaker({ targetPrice, side, book, filters, maker
 function makeAutoSettlementClientOrderId(side) {
   const rand = crypto.getRandomValues(new Uint32Array(2));
   return `mb_tp_${side.toLowerCase()}_${Date.now()}_${rand[0].toString(36)}${rand[1].toString(36)}`.slice(0, 36);
+}
+
+function makeSlClientAlgoId(side) {
+  const rand = crypto.getRandomValues(new Uint32Array(2));
+  return `mb_sl_${side.toLowerCase()}_${Date.now()}_${rand[0].toString(36)}${rand[1].toString(36)}`.slice(0, 36);
 }
 
 async function queryOrderByClientId(config, symbol, origClientOrderId) {
@@ -1741,7 +2043,7 @@ function isReduceOnlyOrder(order) {
 
 function isExtensionOrder(order) {
   const id = String(order.clientOrderId || order.origClientOrderId || "");
-  return id.startsWith("mb_buy_") || id.startsWith("mb_sell_") || id.startsWith("mb_tp_");
+  return id.startsWith("mb_buy_") || id.startsWith("mb_sell_") || id.startsWith("mb_tp_") || id.startsWith("mb_sl_");
 }
 
 async function readExitOrderIndex() {

@@ -677,6 +677,205 @@ test("auto settlement re-prices one TP from average position after adding at a d
   assert.equal(postedOrders[0].get("reduceOnly"), "true");
 });
 
+test("SL order preview uses leveraged ROI and midpoint trigger", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "100",
+    leverage: 1,
+    offsetTicks: 0,
+    autoSettlementEnabled: false,
+    slOrderEnabled: true,
+    slOrderRoiPct: "10",
+    dryRun: true,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "99.8", askPrice: "100.1" }) };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{ symbol: "BTCUSDT", positionSide: "BOTH", positionAmt: "0", leverage: "1" }]
+        };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "BUY",
+      symbol: "BTCUSDT",
+      quoteAmount: "100",
+      leverage: 1,
+      offsetTicks: 0,
+      autoSettlementEnabled: false,
+      slOrderEnabled: true,
+      slOrderRoiPct: "10",
+      dryRun: true
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  assert.equal(response.ok, true, response.error);
+  const order = response.result?.order as Record<string, unknown>;
+  const slOrder = order.slOrder as Record<string, unknown>;
+  assert.equal(slOrder.enabled, true);
+  assert.equal(slOrder.slPrice, "90.0");
+  assert.equal(slOrder.triggerPrice, "95.0");
+  assert.equal(slOrder.roiPct, 10);
+});
+
+test("SL-only pending entry places a Binance conditional STOP GTX reduce-only order from average position", async () => {
+  const pending = {
+    id: "ps_sl_1",
+    symbol: "BTCUSDT",
+    entrySide: "BUY",
+    exitSide: "SELL",
+    entryClientOrderId: "mb_buy_sl",
+    settlementEnabled: false,
+    slOrderEnabled: true,
+    slOrderRoiPct: 10,
+    slPriceOffset: "10.0",
+    slPlacedQty: "0",
+    makerTicks: 1
+  };
+  const storageState: Record<string, unknown> = {
+    pendingSettlementIndex: { BTCUSDT: [pending] },
+    pendingSettlementFillIndex: {},
+    exitOrderIndex: {}
+  };
+  const postedAlgoOrders: URLSearchParams[] = [];
+  const { api } = loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener() {} }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => ([{
+            symbol: "BTCUSDT",
+            positionSide: "BOTH",
+            positionAmt: "1",
+            entryPrice: "100.0",
+            breakEvenPrice: "100.0",
+            leverage: "1",
+            markPrice: "96.0",
+            unRealizedProfit: "-4.0"
+          }])
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/algoOrder" && options.method === "POST") {
+        const body = new URLSearchParams(options.body || "");
+        postedAlgoOrders.push(body);
+        return {
+          ok: true,
+          json: async () => ({
+            algoId: 123,
+            clientAlgoId: body.get("clientAlgoId"),
+            algoStatus: "NEW"
+          })
+        };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const result = await api.processUserStreamEntryFill({
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    recvWindow: 5000
+  }, {
+    e: "ORDER_TRADE_UPDATE",
+    o: { s: "BTCUSDT", c: "mb_buy_sl", x: "TRADE", X: "FILLED", z: "1", l: "1" }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.pending, false);
+  assert.equal(postedAlgoOrders.length, 1);
+  assert.equal(postedAlgoOrders[0].get("symbol"), "BTCUSDT");
+  assert.equal(postedAlgoOrders[0].get("side"), "SELL");
+  assert.equal(postedAlgoOrders[0].get("algoType"), "CONDITIONAL");
+  assert.equal(postedAlgoOrders[0].get("type"), "STOP");
+  assert.equal(postedAlgoOrders[0].get("timeInForce"), "GTX");
+  assert.equal(postedAlgoOrders[0].get("quantity"), "1.000");
+  assert.equal(postedAlgoOrders[0].get("price"), "90.0");
+  assert.equal(postedAlgoOrders[0].get("triggerPrice"), "95.0");
+  assert.equal(postedAlgoOrders[0].get("reduceOnly"), "true");
+  assert.equal(postedAlgoOrders[0].get("workingType"), "CONTRACT_PRICE");
+});
+
 test("entry maker order retries five times with fresh maker-safe prices after GTX rejection", async () => {
   const storageState: Record<string, unknown> = {
     apiKey: "key",

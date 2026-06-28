@@ -1,0 +1,208 @@
+//@version=5
+indicator("Flash Point Live Decision Tool", overlay=true, precision=2, max_labels_count=500)
+
+// Flash Point Pro v0.8 reconstruction from the author-provided formula.
+flashPoint() =>
+    float typicalPrice = (2 * close + high + low) / 4
+    float periodLowest = ta.lowest(low, 5)
+    float periodHighest = ta.highest(high, 4)
+    float priceRange = periodHighest - periodLowest
+    float stochVal = priceRange == 0 ? 0 : ((typicalPrice - periodLowest) / priceRange) * 100
+    float c1 = ta.ema(stochVal, 4)
+    float slowBase = 0.667 * nz(c1[1]) + 0.333 * c1
+    float c2 = ta.ema(slowBase, 2)
+    bool crossUp = ta.crossover(c1, c2)
+    bool crossDown = ta.crossunder(c1, c2)
+    [c1, c2, crossUp, crossDown]
+
+addReason(string base, string reason) =>
+    reason == "" ? base : base == "" ? reason : base + " + " + reason
+
+formatLevel(float value) =>
+    str.tostring(value, "#.##")
+
+// Display settings
+showTable = input.bool(true, "Show status table")
+showLiveLabel = input.bool(true, "Show latest live label")
+showMarkers = input.bool(true, "Show entry/trim/exit markers")
+positionMode = input.string("Auto", "Position mode", options=["Auto", "Flat", "Long", "Short"])
+
+// Symbol detection
+symbolText = str.upper(syminfo.tickerid)
+isBTC = str.contains(symbolText, "BTCUSDC")
+isETH = str.contains(symbolText, "ETHUSDC")
+isSOL = str.contains(symbolText, "SOLUSDC")
+supported = isBTC or isETH or isSOL
+target = isBTC ? "BTCUSDC" : isETH ? "ETHUSDC" : isSOL ? "SOLUSDC" : syminfo.ticker
+labelSymbol = isBTC ? "BTC" : isETH ? "ETH" : isSOL ? "SOL" : syminfo.ticker
+
+// Tuned first-pass profiles from the 6-month research baseline.
+mainTf = isBTC ? "5" : isETH ? "10" : isSOL ? "10" : timeframe.period
+earlyTf = isBTC ? "2" : isETH ? "2" : isSOL ? "3" : timeframe.period
+filterTf = isBTC ? "15" : mainTf
+
+longWatchC1 = isSOL ? 50.0 : 45.0
+longReadyC1 = isSOL ? 45.0 : 35.0
+longEnterC1 = isSOL ? 45.0 : 40.0
+shortWatchC1 = 55.0
+shortReadyC1 = 65.0
+shortEnterC1 = 60.0
+readyScoreNeed = 3
+enterScoreNeed = 4
+
+[mainC1, mainC2, mainCrossUp, mainCrossDown] = request.security(syminfo.tickerid, mainTf, flashPoint(), barmerge.gaps_off, barmerge.lookahead_off)
+[earlyC1, earlyC2, earlyCrossUp, earlyCrossDown] = request.security(syminfo.tickerid, earlyTf, flashPoint(), barmerge.gaps_off, barmerge.lookahead_off)
+[filterC1, filterC2, filterCrossUp, filterCrossDown] = request.security(syminfo.tickerid, filterTf, flashPoint(), barmerge.gaps_off, barmerge.lookahead_off)
+
+// Scores are intentionally lighter than the strict backtest strategy.
+bullScore = 0
+bullScore += mainC1 <= longWatchC1 ? 1 : 0
+bullScore += mainC1 <= longReadyC1 ? 1 : 0
+bullScore += mainC1 > mainC2 ? 1 : 0
+bullScore += mainC1 <= mainC2 and mainC2 - mainC1 <= 5 ? 1 : 0
+bullScore += mainCrossUp ? 2 : 0
+bullScore += earlyC1 > earlyC2 or earlyCrossUp ? 1 : 0
+
+bearScore = 0
+bearScore += mainC1 >= shortWatchC1 ? 1 : 0
+bearScore += mainC1 >= shortReadyC1 ? 1 : 0
+bearScore += mainC1 < mainC2 ? 1 : 0
+bearScore += mainC1 >= mainC2 and mainC1 - mainC2 <= 5 ? 1 : 0
+bearScore += mainCrossDown ? 2 : 0
+bearScore += earlyC1 < earlyC2 or earlyCrossDown ? 1 : 0
+
+// BTC uses 15m as a pressure veto. ETH/SOL use the main timeframe only for v1.
+longVeto = isBTC and filterC1 < filterC2 and filterC1 > 60
+shortVeto = isBTC and filterC1 > filterC2 and filterC1 < 40
+
+longWatch = supported and mainC1 <= longWatchC1 and not longVeto
+shortWatch = supported and mainC1 >= shortWatchC1 and not shortVeto
+longReady = supported and mainC1 <= longReadyC1 and bullScore >= readyScoreNeed and not longVeto
+shortReady = supported and mainC1 >= shortReadyC1 and bearScore >= readyScoreNeed and not shortVeto
+longEnter = supported and mainCrossUp and mainC1 <= longEnterC1 and bullScore >= enterScoreNeed and not longVeto
+shortEnter = supported and mainCrossDown and mainC1 >= shortEnterC1 and bearScore >= enterScoreNeed and not shortVeto
+
+longReason = ""
+longReason := addReason(longReason, mainCrossUp ? "cross up" : "")
+longReason := addReason(longReason, mainC1 <= longReadyC1 ? "C1 low" : mainC1 <= longWatchC1 ? "C1 near low" : "")
+longReason := addReason(longReason, mainC1 > mainC2 ? "C1 above C2" : mainC2 - mainC1 <= 5 ? "C1/C2 tight" : "")
+longReason := addReason(longReason, earlyC1 > earlyC2 or earlyCrossUp ? "early TF agrees" : "")
+longReason := addReason(longReason, "bull score " + str.tostring(bullScore))
+
+shortReason = ""
+shortReason := addReason(shortReason, mainCrossDown ? "cross down" : "")
+shortReason := addReason(shortReason, mainC1 >= shortReadyC1 ? "C1 high" : mainC1 >= shortWatchC1 ? "C1 near high" : "")
+shortReason := addReason(shortReason, mainC1 < mainC2 ? "C1 below C2" : mainC1 - mainC2 <= 5 ? "C1/C2 tight" : "")
+shortReason := addReason(shortReason, earlyC1 < earlyC2 or earlyCrossDown ? "early TF agrees" : "")
+shortReason := addReason(shortReason, "bear score " + str.tostring(bearScore))
+
+var string autoSide = "FLAT"
+manualSide = positionMode == "Long" ? "LONG" : positionMode == "Short" ? "SHORT" : positionMode == "Flat" ? "FLAT" : autoSide
+
+state = "WAIT"
+side = ""
+reason = supported ? "no reversal setup" : "no tuned profile"
+
+if not supported
+    state := "UNSUPPORTED"
+    side := ""
+    reason := "no tuned profile"
+else if manualSide == "LONG"
+    side := "LONG"
+    if mainCrossDown and bearScore >= 4
+        state := "EXIT"
+        reason := shortReason
+    else if bearScore >= 3 or mainC1 < mainC2
+        state := "TRIM"
+        reason := shortReason
+    else
+        state := "HOLD"
+        reason := addReason(addReason("", "trend ok"), addReason("no bear pressure", "bull score " + str.tostring(bullScore)))
+else if manualSide == "SHORT"
+    side := "SHORT"
+    if mainCrossUp and bullScore >= 4
+        state := "EXIT"
+        reason := longReason
+    else if bullScore >= 3 or mainC1 > mainC2
+        state := "TRIM"
+        reason := longReason
+    else
+        state := "HOLD"
+        reason := addReason(addReason("", "trend ok"), addReason("no bull pressure", "bear score " + str.tostring(bearScore)))
+else
+    if longEnter
+        state := "ENTER"
+        side := "LONG"
+        reason := longReason
+    else if shortEnter
+        state := "ENTER"
+        side := "SHORT"
+        reason := shortReason
+    else if longReady and (not shortReady or bullScore >= bearScore)
+        state := "READY"
+        side := "LONG"
+        reason := longReason
+    else if shortReady
+        state := "READY"
+        side := "SHORT"
+        reason := shortReason
+    else if longWatch and (not shortWatch or bullScore >= bearScore)
+        state := "WATCH"
+        side := "LONG"
+        reason := longReason
+    else if shortWatch
+        state := "WATCH"
+        side := "SHORT"
+        reason := shortReason
+
+if positionMode == "Auto"
+    if state == "ENTER"
+        autoSide := side
+    else if state == "EXIT"
+        autoSide := "FLAT"
+
+signalText = supported ? labelSymbol + (side == "" ? " " : " " + side + " ") + state + ": " + reason : target + " unsupported: no tuned profile"
+targetText = supported ? "Target: " + target + " profile active | main " + mainTf + "m | early " + earlyTf + "m" : "Target: " + target + " unsupported"
+
+stateColor = state == "ENTER" or state == "HOLD" ? color.rgb(30, 180, 95) :
+     state == "READY" or state == "WATCH" ? color.rgb(240, 185, 11) :
+     state == "TRIM" ? color.rgb(245, 166, 35) :
+     state == "EXIT" or state == "UNSUPPORTED" ? color.rgb(230, 70, 70) : color.rgb(120, 130, 145)
+
+markerBelow = side == "LONG"
+markerAbove = side == "SHORT"
+plotshape(showMarkers and state == "ENTER" and markerBelow, title="Long ENTER", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, text="ENTER")
+plotshape(showMarkers and state == "ENTER" and markerAbove, title="Short ENTER", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="ENTER")
+plotshape(showMarkers and state == "TRIM" and markerBelow, title="Long TRIM", style=shape.circle, location=location.abovebar, color=color.orange, size=size.tiny, text="TRIM")
+plotshape(showMarkers and state == "TRIM" and markerAbove, title="Short TRIM", style=shape.circle, location=location.belowbar, color=color.orange, size=size.tiny, text="TRIM")
+plotshape(showMarkers and state == "EXIT" and markerBelow, title="Long EXIT", style=shape.xcross, location=location.abovebar, color=color.red, size=size.small, text="EXIT")
+plotshape(showMarkers and state == "EXIT" and markerAbove, title="Short EXIT", style=shape.xcross, location=location.belowbar, color=color.lime, size=size.small, text="EXIT")
+
+var label liveLabel = na
+if showLiveLabel and barstate.islast
+    label.delete(liveLabel)
+    y = side == "SHORT" ? high : low
+    labelStyle = side == "SHORT" ? label.style_label_down : label.style_label_up
+    liveLabel := label.new(bar_index, y, signalText, style=labelStyle, color=color.new(stateColor, 5), textcolor=color.white, size=size.small)
+
+var table statusTable = table.new(position.top_right, 2, 7, border_width=1)
+if showTable and barstate.islast
+    table.cell(statusTable, 0, 0, "Flash Point Live", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 0, state, text_color=color.white, bgcolor=stateColor)
+    table.cell(statusTable, 0, 1, "Target", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 1, targetText, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 2, "Signal", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 2, signalText, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 3, "C1 / C2", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 3, formatLevel(mainC1) + " / " + formatLevel(mainC2), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 4, "Score", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 4, "Bull " + str.tostring(bullScore) + " | Bear " + str.tostring(bearScore), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 5, "Position", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 5, positionMode == "Auto" ? "Auto: " + autoSide : positionMode, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 6, "Live note", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 6, "Intrabar states can change before close", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+
+alertcondition(state == "ENTER" and side == "LONG", "Flash Point LONG ENTER", "Flash Point LONG ENTER")
+alertcondition(state == "ENTER" and side == "SHORT", "Flash Point SHORT ENTER", "Flash Point SHORT ENTER")
+alertcondition(state == "TRIM", "Flash Point TRIM", "Flash Point TRIM")
+alertcondition(state == "EXIT", "Flash Point EXIT", "Flash Point EXIT")

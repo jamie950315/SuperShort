@@ -85,12 +85,46 @@ test("content script resets dedupe state when clearing all samples", () => {
   assert.match(content, /clearAllSamples[\s\S]*resetSessionDedupeState\(\)/);
 });
 
+test("content script isolates pending IndexedDB writes across clears", () => {
+  const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  assert.match(content, /let sessionGeneration = 0/);
+  assert.match(content, /let writeChain = Promise\.resolve\(\)/);
+  assert.match(content, /const generation = sessionGeneration/);
+  assert.match(content, /if \(generation !== sessionGeneration \|\| sampleSessionId !== sessionId\) return/);
+  assert.match(content, /clearCurrentSession[\s\S]*sessionGeneration \+= 1/);
+  assert.match(content, /clearAllSamples[\s\S]*sessionGeneration \+= 1/);
+});
+
+test("content script throttles expensive market text detection", () => {
+  const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  assert.match(content, /const MARKET_GUESS_CACHE_MS = 2000/);
+  assert.match(content, /let cachedMarketGuess = null/);
+  assert.match(content, /function guessMarket\(\)/);
+  assert.match(content, /cachedMarketGuess\.href === href/);
+  assert.match(content, /cachedMarketGuess\.title === title/);
+  assert.match(content, /market: guessMarket\(\)/);
+});
+
 test("content script requires a strong Flash Point indicator candidate", () => {
   const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
   assert.match(content, /function isStrongFlashPointSeries/);
   assert.match(content, /\.filter\(\(candidate\) => candidate\.strong\)/);
   assert.match(content, /function selectFlashPointCandidate/);
   assert.match(content, /candidates\.length === 1/);
+});
+
+test("content script rejects ambiguous explicit Flash Point candidates", () => {
+  const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  assert.match(content, /dedupeEquivalentFlashPointCandidates/);
+  assert.match(content, /if \(explicit\.length === 1\) return explicit\[0\]/);
+  assert.match(content, /if \(explicit\.length > 1\) return null/);
+});
+
+test("analysis model rejects ambiguous explicit Flash Point candidates", () => {
+  const model = fs.readFileSync(path.join(__dirname, "..", "analysis", "flash-point-model.js"), "utf8");
+  assert.match(model, /dedupeEquivalentFlashPointCandidates/);
+  assert.match(model, /if \(explicit\.length === 1\) return explicit\[0\]/);
+  assert.match(model, /if \(explicit\.length > 1\) return null/);
 });
 
 test("manifest injects WebSocket mirror in the main world at document_start", () => {

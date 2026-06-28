@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { openStore } from "../src/server/db.js";
-import type { PaperOrder } from "../src/shared/types.js";
+import type { Candle, PaperOrder } from "../src/shared/types.js";
 
 function openTempStore() {
   const dir = mkdtempSync(join(tmpdir(), "supershort-db-"));
@@ -94,6 +94,39 @@ test("latency samples have a time index for retention cleanup", () => {
   try {
     const indexes = store.db.prepare("PRAGMA index_list(latency_samples)").all() as Array<{ name: string }>;
     assert.ok(indexes.some((index) => index.name === "idx_latency_samples_time"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("closed candle warmup excludes the currently active candle", () => {
+  const { store, cleanup } = openTempStore();
+  try {
+    const closed: Candle = {
+      symbol: "BTCUSDC",
+      interval: "1m",
+      openTime: 0,
+      closeTime: 60_000,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100.5,
+      volume: 1,
+      trades: 10
+    };
+    const active: Candle = {
+      ...closed,
+      openTime: 60_000,
+      closeTime: 120_000,
+      close: 102
+    };
+
+    store.upsertCandle(closed);
+    store.upsertCandle(active);
+
+    assert.deepEqual(store.getClosedCandles("BTCUSDC", "1m", 10, 60_000), []);
+    assert.deepEqual(store.getClosedCandles("BTCUSDC", "1m", 10, 90_000), [closed]);
+    assert.deepEqual(store.getCandles("BTCUSDC", "1m", 10), [closed, active]);
   } finally {
     cleanup();
   }

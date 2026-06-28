@@ -12,8 +12,11 @@
     "build:server": "tsc -p tsconfig.server.json",
     "start:api": "node dist/server/api.js",
     "start:worker": "node dist/server/worker.js",
+    "check:extension": "node --check background.js && node --check content.js && node --check popup.js",
+    "check:crossingfetch": "node --check CrossingFetch/flashpoint-algo.js && node --check CrossingFetch/content.js && node --check CrossingFetch/injected.js && node --check CrossingFetch/core.js && node --check CrossingFetch/analysis/flash-point-model.js && node --check CrossingFetch/analysis/fit-exact-flash-point.js",
+    "pack:extension": "node scripts/pack-extension.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts && node --test CrossingFetch/test/*.test.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

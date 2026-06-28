@@ -715,6 +715,132 @@ test("auto settlement re-prices one TP from average position after adding at a d
   assert.equal(postedOrders[0].get("reduceOnly"), "true");
 });
 
+test("auto settlement serializes same-symbol same-side TP placement", async () => {
+  const makePending = (id: string, entryClientOrderId: string) => ({
+    id,
+    symbol: "BTCUSDT",
+    entrySide: "BUY",
+    exitSide: "SELL",
+    entryClientOrderId,
+    entryPrice: "90.0",
+    settlementPrice: "100.0",
+    quantity: "1",
+    placedQty: "0",
+    roiPct: 10,
+    leverage: 1,
+    originalAmount: 90,
+    makerTicks: 1
+  });
+  const storageState: Record<string, unknown> = {
+    pendingSettlementIndex: { BTCUSDT: [makePending("ps_a", "mb_buy_a"), makePending("ps_b", "mb_buy_b")] },
+    pendingSettlementFillIndex: {},
+    exitOrderIndex: { BTCUSDT: { SELL: ["mb_tp_sell_old"] } }
+  };
+  let activeTpPosts = 0;
+  let maxConcurrentTpPosts = 0;
+  const postedOrders: URLSearchParams[] = [];
+  const { api } = loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener() {} }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && (options.method || "GET") === "GET") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbol: "BTCUSDT",
+            origClientOrderId: parsed.searchParams.get("origClientOrderId"),
+            status: "FILLED",
+            executedQty: "1"
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => ([{
+            symbol: "BTCUSDT",
+            positionSide: "BOTH",
+            positionAmt: "2",
+            entryPrice: "95.0",
+            breakEvenPrice: "95.0",
+            leverage: "1",
+            markPrice: "90.0",
+            unRealizedProfit: "0"
+          }])
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "DELETE") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbol: "BTCUSDT",
+            origClientOrderId: parsed.searchParams.get("origClientOrderId"),
+            executedQty: "0"
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
+        activeTpPosts += 1;
+        maxConcurrentTpPosts = Math.max(maxConcurrentTpPosts, activeTpPosts);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        activeTpPosts -= 1;
+        const body = new URLSearchParams(options.body || "");
+        postedOrders.push(body);
+        return {
+          ok: true,
+          json: async () => ({
+            symbol: "BTCUSDT",
+            clientOrderId: body.get("newClientOrderId"),
+            executedQty: "0"
+          })
+        };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const results = await api.processPendingSettlementsForSymbol({
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    recvWindow: 5000
+  }, "BTCUSDT");
+
+  assert.ok(Array.isArray(results));
+  assert.ok(postedOrders.length >= 1);
+  assert.equal(maxConcurrentTpPosts, 1);
+});
+
 test("SL order preview uses leveraged ROI and midpoint trigger", async () => {
   const storageState: Record<string, unknown> = {
     apiKey: "key",

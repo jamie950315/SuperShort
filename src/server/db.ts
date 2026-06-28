@@ -35,6 +35,7 @@ export interface Store {
   saveStrategyConfig(config: Omit<StrategyConfig, "version" | "createdAt">): StrategyConfig;
   upsertCandle(candle: Candle): void;
   getCandles(symbol: string, interval: IntervalName, limit: number): Candle[];
+  getClosedCandles(symbol: string, interval: IntervalName, limit: number, now?: number): Candle[];
   insertRawEvent(type: string, symbol: string, time: number, payload: unknown): void;
   cleanupRawEvents(retentionDays: number): number;
   cleanupTelemetry(retentionDays: number): TelemetryCleanupResult;
@@ -96,6 +97,21 @@ function percentile(values: number[], p: number): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
+}
+
+function candleFromRow(row: Record<string, unknown>): Candle {
+  return {
+    symbol: String(row.symbol),
+    interval: row.interval as IntervalName,
+    openTime: Number(row.open_time),
+    closeTime: Number(row.close_time),
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: Number(row.volume),
+    trades: Number(row.trades)
+  };
 }
 
 function normalizeStrategyConfig(parsed: StrategyConfig, symbol: string, version: number, createdAt: number): StrategyConfig {
@@ -255,18 +271,13 @@ export function openStore(databasePath: string): Store {
       const rows = db.prepare(`
         SELECT * FROM candles WHERE symbol = ? AND interval = ? ORDER BY open_time DESC LIMIT ?
       `).all(symbol, interval, limit) as Array<Record<string, unknown>>;
-      return rows.reverse().map((row) => ({
-        symbol: String(row.symbol),
-        interval: row.interval as IntervalName,
-        openTime: Number(row.open_time),
-        closeTime: Number(row.close_time),
-        open: Number(row.open),
-        high: Number(row.high),
-        low: Number(row.low),
-        close: Number(row.close),
-        volume: Number(row.volume),
-        trades: Number(row.trades)
-      }));
+      return rows.reverse().map(candleFromRow);
+    },
+    getClosedCandles(symbol, interval, limit, now = Date.now()) {
+      const rows = db.prepare(`
+        SELECT * FROM candles WHERE symbol = ? AND interval = ? AND close_time < ? ORDER BY open_time DESC LIMIT ?
+      `).all(symbol, interval, now, limit) as Array<Record<string, unknown>>;
+      return rows.reverse().map(candleFromRow);
     },
     insertRawEvent(type, symbol, time, payload) {
       db.prepare("INSERT INTO raw_events (type, symbol, time, payload) VALUES (?, ?, ?, ?)").run(type, symbol, time, JSON.stringify(payload));

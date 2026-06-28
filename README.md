@@ -16,7 +16,9 @@ The dashboard/backend is a companion paper-trading and monitoring system. It use
 
 ## Browser Extension
 
-Current extension version: `0.4.4`.
+Current extension version: `0.4.5`.
+
+The dashboard package version in `package.json` is separate from the browser extension version in `manifest.json`.
 
 The root extension files are:
 
@@ -45,6 +47,9 @@ Auto settlement behavior:
 - The replacement TP uses the latest Binance average position entry price plus or minus the original settlement price offset.
 - Example: a long opened at 100 with a +10 settlement target creates a TP at 110. If another long opens at 90 and the average entry becomes 95, the new TP is 105. The old 110 TP is canceled before the new TP is placed.
 - Only extension auto-settlement orders with `mb_tp_` client ids are replaced by this flow.
+- Same-symbol, same-side TP settlement is serialized so concurrent entry fills cannot place overlapping TP orders from the same position snapshot.
+- Profit-only settlement protects reduce-only settlement prices from crossing into an expected-loss exit.
+- Optional SL order places a Binance conditional GTX reduce-only stop-limit order after an entry fill, using the live one-way position quantity and average entry price.
 
 Install:
 
@@ -140,6 +145,14 @@ Useful checks:
 npm test
 npm run typecheck
 npm run build
+npm run check:extension
+npm run check:crossingfetch
+```
+
+Build the browser extension release package from the current `manifest.json` version:
+
+```bash
+npm run pack:extension
 ```
 
 `CrossingFetch` checks:

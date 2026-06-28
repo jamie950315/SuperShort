@@ -128,9 +128,22 @@ function isStrongFlashPointSeries(entry, values, row) {
 }
 
 function selectFlashPointCandidate(candidates) {
-  const explicit = candidates.filter((candidate) => String(candidate.path || "").includes("l9uPDe"));
-  if (explicit.length) return explicit.sort((a, b) => b.score - a.score)[0];
+  const explicit = dedupeEquivalentFlashPointCandidates(candidates.filter((candidate) => String(candidate.path || "").includes("l9uPDe")));
+  if (explicit.length === 1) return explicit[0];
+  if (explicit.length > 1) return null;
   return candidates.length === 1 ? candidates[0] : null;
+}
+
+function dedupeEquivalentFlashPointCandidates(candidates) {
+  const seen = new Set();
+  const unique = [];
+  for (const candidate of candidates) {
+    const key = `${candidate.path || ""}:${candidate.c1}:${candidate.c2}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(candidate);
+  }
+  return unique;
 }
 
 function extractExactFlashPointAt(row, time) {

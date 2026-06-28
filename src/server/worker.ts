@@ -22,6 +22,8 @@ const signalGates = new Map<IntervalName, PersistentSignalGate>();
 type PaperResetState = { time: number; equity: number };
 let appliedPaperResetAt = store.getState<PaperResetState | null>("paper_reset", null)?.time ?? 0;
 let binanceWsConnected = false;
+let binanceState = { ...store.getState<Record<string, unknown>>("binance", { restOk: false }), wsConnected: false };
+store.setState("binance", binanceState);
 
 for (const interval of ["1s", "5s", "15s", "30s", "1m"] as IntervalName[]) {
   flashSeries.set(interval, new FlashPointSeries());
@@ -34,7 +36,7 @@ for (const order of store.getOpenPaperOrders(config.symbol)) {
 for (const interval of ["1s", "5s", "15s", "30s", "1m"] as IntervalName[]) {
   const series = flashSeries.get(interval);
   if (!series) continue;
-  for (const candle of store.getCandles(config.symbol, interval, 200)) {
+  for (const candle of store.getClosedCandles(config.symbol, interval, 200)) {
     series.update(candle);
   }
 }
@@ -159,6 +161,22 @@ function cleanupStorage(): void {
   store.setState("storage", { lastCleanupAt: Date.now(), telemetry, limit });
 }
 
+function shallowEqualState(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+function setBinanceState(patch: { wsConnected?: boolean; restOk?: boolean; error?: string }): void {
+  const next = { ...binanceState, ...patch };
+  if (patch.restOk === true) delete next.error;
+  if (shallowEqualState(next, binanceState)) return;
+  binanceState = next;
+  store.setState("binance", next);
+}
+
 async function pollAccount(): Promise<void> {
   const started = Date.now();
   try {
@@ -175,9 +193,9 @@ async function pollAccount(): Promise<void> {
       realAvailableBalance: snapshot.availableBalance,
       realUnrealizedPnl: snapshot.unrealizedPnl
     });
-    store.setState("binance", { wsConnected: binanceWsConnected, restOk: true });
+    setBinanceState({ restOk: true });
   } catch (error) {
-    store.setState("binance", { wsConnected: binanceWsConnected, restOk: false, error: (error as Error).message });
+    setBinanceState({ restOk: false, error: (error as Error).message });
   }
 }
 
@@ -223,11 +241,12 @@ const stream = new BinanceMarketStream(config, {
   },
   onBookTicker(event) {
     applyExternalPaperReset();
+    binanceWsConnected = true;
     currentBook = event;
     paper.setBook(event);
     store.insertRawEvent("bookTicker", event.symbol, event.eventTime, event);
     for (const order of paper.processBook(event)) store.upsertPaperOrder(order);
-    store.setState("binance", { wsConnected: true, restOk: true });
+    setBinanceState({ wsConnected: true });
   },
   onLatency(kind, valueMs, time) {
     store.insertLatency(kind, valueMs, time);
@@ -240,7 +259,7 @@ const stream = new BinanceMarketStream(config, {
       paper.clearBook();
     }
     store.setState("worker", { running: status.connected, lastEventAt: Date.now(), reconnects, message: status.message });
-    store.setState("binance", { wsConnected: status.connected, restOk: true });
+    setBinanceState({ wsConnected: status.connected });
   }
 });
 

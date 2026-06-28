@@ -11,8 +11,11 @@
   const NO_BAR_FALLBACK_SAMPLE_MS = 1000;
   const BODY_FLASH_SCAN_INTERVAL_MS = 2500;
   const MAX_VISIBLE_TEXT_NODES = 500;
+  const MARKET_GUESS_CACHE_MS = 2000;
 
   let dbPromise = null;
+  let sessionGeneration = 0;
+  let writeChain = Promise.resolve();
   let recording = false;
   let sessionId = makeSessionId();
   let latestBar = null;
@@ -36,6 +39,7 @@
   let lastSocketAlignedKey = "";
   let lastBodyFlashScanAt = 0;
   let lastBodyFlash = null;
+  let cachedMarketGuess = null;
 
   createPanel();
   startFlashRefreshLoop();
@@ -182,10 +186,7 @@
         url: location.href,
         title: document.title
       },
-      market: {
-        symbol: guessSymbol(),
-        timeframe: guessTimeframe()
-      },
+      market: guessMarket(),
       bar: latestBar,
       barSeries: latestBarSeries,
       instantBar: latestSocketSnapshot?.bar || null,
@@ -260,10 +261,7 @@
         url: location.href,
         title: document.title
       },
-      market: {
-        symbol: guessSymbol(),
-        timeframe: guessTimeframe()
-      },
+      market: guessMarket(),
       bar,
       barSeries: latestBarSeries,
       instantBar: bar,
@@ -349,10 +347,20 @@
   }
 
   async function saveSample(sample) {
-    const db = await openDb();
-    await putRecord(db, sample);
-    savedSamples += 1;
-    updateStatus();
+    const generation = sessionGeneration;
+    const sampleSessionId = sample?.sessionId || sessionId;
+    const record = { ...sample, sessionId: sampleSessionId };
+    const write = writeChain.catch(() => {}).then(async () => {
+      if (generation !== sessionGeneration || sampleSessionId !== sessionId) return;
+      const db = await openDb();
+      if (generation !== sessionGeneration || sampleSessionId !== sessionId) return;
+      await putRecord(db, record);
+      if (generation !== sessionGeneration || sampleSessionId !== sessionId) return;
+      savedSamples += 1;
+      updateStatus();
+    });
+    writeChain = write.catch(() => {});
+    return write;
   }
 
   function openDb() {
@@ -425,12 +433,18 @@
     });
   }
 
-  async function deleteCurrentSession() {
+  async function runExclusiveDbTask(task) {
+    const run = writeChain.catch(() => {}).then(task);
+    writeChain = run.catch(() => {});
+    return run;
+  }
+
+  async function deleteSession(targetSessionId) {
     const db = await openDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
       const index = tx.objectStore(STORE).index("sessionId");
-      const request = index.openCursor(IDBKeyRange.only(sessionId));
+      const request = index.openCursor(IDBKeyRange.only(targetSessionId));
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) return;
@@ -461,9 +475,10 @@
 
   async function clearCurrentSession() {
     try {
-      await deleteCurrentSession();
-      savedSamples = 0;
+      const sessionToDelete = sessionId;
+      sessionGeneration += 1;
       sessionId = makeSessionId();
+      savedSamples = 0;
       lastObservedSample = null;
       previousFlash = null;
       previousInstantFlash = null;
@@ -473,6 +488,7 @@
       latestIndicatorSeries = [];
       latestIndicatorSeriesByPath.clear();
       latestSocketSnapshot = null;
+      await runExclusiveDbTask(() => deleteSession(sessionToDelete));
       updateStatus("Current session cleared.");
     } catch (error) {
       showError(error);
@@ -481,20 +497,23 @@
 
   async function clearAllSamples() {
     try {
-      const db = await openDb();
-      await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).clear();
-        tx.oncomplete = resolve;
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error);
-      });
-      savedSamples = 0;
+      sessionGeneration += 1;
       sessionId = makeSessionId();
+      savedSamples = 0;
       lastObservedSample = null;
       previousFlash = null;
       previousInstantFlash = null;
       resetSessionDedupeState();
+      await runExclusiveDbTask(async () => {
+        const db = await openDb();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE, "readwrite");
+          tx.objectStore(STORE).clear();
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+        });
+      });
       updateStatus("All samples cleared.");
     } catch (error) {
       showError(error);
@@ -537,6 +556,31 @@
     const titleMatch = document.title.match(/\b([A-Z0-9]{2,20}(?:USDT|USD|BTC|ETH))\b/);
     if (titleMatch) return titleMatch[1].toUpperCase();
     return "unknown";
+  }
+
+  function guessMarket() {
+    const now = Date.now();
+    const href = location.href;
+    const title = document.title;
+    if (
+      cachedMarketGuess
+      && now - cachedMarketGuess.at < MARKET_GUESS_CACHE_MS
+      && cachedMarketGuess.href === href
+      && cachedMarketGuess.title === title
+    ) {
+      return { ...cachedMarketGuess.market };
+    }
+    const market = {
+      symbol: guessSymbol(),
+      timeframe: guessTimeframe()
+    };
+    cachedMarketGuess = {
+      at: now,
+      href,
+      title,
+      market
+    };
+    return { ...market };
   }
 
   function guessTimeframe() {
@@ -658,9 +702,23 @@
   }
 
   function selectFlashPointCandidate(candidates) {
-    const explicit = candidates.filter((candidate) => String(candidate.entry?.path || "").includes("l9uPDe"));
-    if (explicit.length) return explicit.sort((a, b) => b.score - a.score)[0];
+    const explicit = dedupeEquivalentFlashPointCandidates(candidates.filter((candidate) => String(candidate.entry?.path || "").includes("l9uPDe")));
+    if (explicit.length === 1) return explicit[0];
+    if (explicit.length > 1) return null;
     return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function dedupeEquivalentFlashPointCandidates(candidates) {
+    const seen = new Set();
+    const unique = [];
+    for (const candidate of candidates) {
+      const values = candidate.point?.values || [];
+      const key = `${candidate.entry?.path || ""}:${values[0]}:${values[1]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(candidate);
+    }
+    return unique;
   }
 
   function resetSessionDedupeState() {
@@ -670,6 +728,7 @@
     lastSocketAlignedKey = "";
     lastBodyFlashScanAt = 0;
     lastBodyFlash = null;
+    cachedMarketGuess = null;
   }
 
   function makeInstantSeries(series, updatedAt, kind) {

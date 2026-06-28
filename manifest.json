@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SuperShort",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Low-latency post-only maker limit buttons for Binance USD-M Futures on Binance and TradingView pages.",
   "permissions": [
     "storage",

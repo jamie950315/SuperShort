@@ -20,7 +20,7 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.4";
+const EXTENSION_VERSION = "0.4.5";
 const EXCHANGE_INFO_CACHE = new Map();
 const POSITION_CACHE = new Map();
 const POSITION_CACHE_TTL_MS = 30000;
@@ -36,6 +36,7 @@ let PENDING_SETTLEMENT_INDEX_WRITE_TIMER = null;
 let PENDING_SETTLEMENT_FILL_INDEX_CACHE = null;
 const PENDING_SETTLEMENT_WATCHERS = new Map();
 const PENDING_SETTLEMENT_PROCESSING = new Set();
+const PENDING_SETTLEMENT_EXIT_LOCKS = new Map();
 const AUTO_SETTLEMENT_FAST_POLL_MS = 120;
 const AUTO_SETTLEMENT_FAST_WINDOW_MS = 3500;
 const AUTO_SETTLEMENT_SLOW_POLL_MS = 1000;
@@ -1494,6 +1495,22 @@ function watcherKey(pending) {
   return `${pending.symbol}:${pending.entryClientOrderId || pending.id}`;
 }
 
+async function withPendingSettlementExitLock(pending, fn) {
+  const key = `${pending.symbol}:${pending.exitSide || ""}`;
+  if (!pending.symbol || !pending.exitSide) return fn();
+  const previous = PENDING_SETTLEMENT_EXIT_LOCKS.get(key) || Promise.resolve();
+  const run = previous.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  PENDING_SETTLEMENT_EXIT_LOCKS.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (PENDING_SETTLEMENT_EXIT_LOCKS.get(key) === tail) {
+      PENDING_SETTLEMENT_EXIT_LOCKS.delete(key);
+    }
+  }
+}
+
 async function startFastSettlementWatcher(config, pending, filters) {
   const key = watcherKey(pending);
   if (PENDING_SETTLEMENT_WATCHERS.has(key)) return;
@@ -1565,7 +1582,7 @@ async function processPendingSettlementWithExecution(config, pending, filters, e
     if (tpEnabled) {
       result = {
         ...result,
-        ...(await processPendingTpSettlement(config, pending, filters, { executedQty, status, watcher: execution.watcher }))
+        ...(await withPendingSettlementExitLock(pending, () => processPendingTpSettlement(config, pending, filters, { executedQty, status, watcher: execution.watcher })))
       };
     } else if (!slEnabled) {
       const terminal = ["FILLED", "CANCELED", "EXPIRED", "REJECTED"].includes(status);

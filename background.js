@@ -18,7 +18,7 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.1";
+const EXTENSION_VERSION = "0.4.2";
 const EXCHANGE_INFO_CACHE = new Map();
 const POSITION_CACHE = new Map();
 const POSITION_CACHE_TTL_MS = 30000;

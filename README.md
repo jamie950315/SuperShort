@@ -16,7 +16,7 @@ The dashboard/backend is a companion paper-trading and monitoring system. It use
 
 ## Browser Extension
 
-Current extension version: `0.4.1`.
+Current extension version: `0.4.2`.
 
 The root extension files are:
 

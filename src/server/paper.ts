@@ -76,6 +76,10 @@ export class PaperGtxExecutor {
     this.lastBook = book;
   }
 
+  clearBook(): void {
+    this.lastBook = null;
+  }
+
   createOrder(signal: SignalEvent, config: StrategyConfig, latency: LatencyStats): PaperOrder | null {
     if (!config.enabled || !this.lastBook) return null;
     if (config.mode === "single" && this.openOrders().length > 0) return null;
@@ -195,7 +199,7 @@ export class PaperGtxExecutor {
           if (exit.levelIndex !== undefined) this.markSlLevelFilled(order, exit.levelIndex, trade.tradeTime, exit.price);
           if (remainingQuantity > this.quantityEpsilon(order)) {
             order.status = "filled";
-            order.settledAt = trade.tradeTime;
+            order.settledAt = null;
           }
           changed.push(order);
           trades.push(this.toTrade(order, exitFill));

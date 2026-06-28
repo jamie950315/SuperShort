@@ -444,25 +444,25 @@ function ChartPanel({ payload, interval, onInterval }: { payload: DashboardPaylo
     });
     c1.setData(flash.map((point) => ({ time: point.time, value: point.c1 })));
     c2.setData(flash.map((point) => ({ time: point.time, value: point.c2 })));
-    createSeriesMarkers(c1, flash
-      .filter((point) => point.crossing === "up")
-      .map((point) => ({
-        time: point.time,
+    createSeriesMarkers(c1, payload.signals
+      .filter((signal) => signal.direction === "long")
+      .map((signal) => ({
+        time: chartTime(signal.bucket),
         position: "atPriceMiddle",
-        price: point.c1,
+        price: signal.c1,
         color: "#ff5757",
         shape: "arrowUp",
-        text: point.c1 < payload.config.longBelow ? "買" : "加倉"
+        text: "買"
       })), { zOrder: "top" });
-    createSeriesMarkers(c2, flash
-      .filter((point) => point.crossing === "down")
-      .map((point) => ({
-        time: point.time,
+    createSeriesMarkers(c2, payload.signals
+      .filter((signal) => signal.direction === "short")
+      .map((signal) => ({
+        time: chartTime(signal.bucket),
         position: "atPriceMiddle",
-        price: point.c2,
+        price: signal.c2,
         color: "#22c55e",
         shape: "arrowDown",
-        text: point.c1 > payload.config.shortAbove ? "賣" : "賣"
+        text: "賣"
       })), { zOrder: "top" });
 
     let syncing = false;

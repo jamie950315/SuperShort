@@ -56,3 +56,14 @@ Click `Export JSONL` in the floating panel. Each line is one sample with:
 - derived C1/C2 crossing direction
 
 If TradingView draws Flash Point Pro text only on canvas, C1/C2 may be exported as `null` with `readable: false`.
+
+Exports are streamed from IndexedDB in chunks before the final download Blob is created. This keeps large sessions from requiring one full in-memory JSONL string.
+
+## Storage Cleanup
+
+- `Clear Session` deletes only the current recording session and starts a fresh session id.
+- `Clear All` deletes every stored sample in the local CrossingFetch IndexedDB store and resets in-memory duplicate filters.
+
+## Exact Indicator Matching
+
+CrossingFetch still prefers the known Flash Point Pro internal series path when it is present. If TradingView changes that path, the recorder and analysis scripts only use a fallback series when its first two values closely match the visible C1/C2 values. Ambiguous fallback candidates are skipped instead of guessed.

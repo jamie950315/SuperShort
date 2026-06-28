@@ -17,6 +17,8 @@ function loadBackground(extra: Record<string, unknown> = {}) {
     TextEncoder,
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
     Promise,
     Map,
     Date,
@@ -192,6 +194,42 @@ test("trading snapshot stops local REST calls while Binance IP ban is active", a
 
   assert.equal(callsAfterBan, 1);
   assert.equal(fetchCalls, callsAfterBan);
+});
+
+test("market stream watchdog closes stale connected sockets", async () => {
+  let now = 1000;
+  let watchdog: (() => void) | null = null;
+  let closeCalls = 0;
+  const sockets: Array<{ onopen?: () => void; onclose?: () => void; close: () => void }> = [];
+  const { api } = loadBackground({
+    Date: { now: () => now },
+    setInterval: (fn: () => void) => {
+      watchdog = fn;
+      return 1;
+    },
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    WebSocket: class MockWebSocket {
+      onopen?: () => void;
+      onclose?: () => void;
+      constructor() {
+        sockets.push(this);
+      }
+      close() {
+        closeCalls += 1;
+        this.onclose?.();
+      }
+    }
+  });
+
+  await api.ensureMarketStreamForSymbol({ baseUrl: "https://fapi.binance.com" }, "BTCUSDT");
+  sockets[0].onopen?.();
+  now += 16_001;
+  watchdog?.();
+
+  assert.equal(closeCalls, 1);
+  assert.equal(api.getMarketTickerSnapshot({ baseUrl: "https://fapi.binance.com", symbol: "BTCUSDT" }).marketStreamStatus.status, "reconnecting");
 });
 
 test("user data stream position cache drives market ticker PNL without REST", async () => {

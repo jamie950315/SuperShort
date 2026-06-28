@@ -151,7 +151,7 @@ export class BinanceMarketStream {
 
   private connect(): void {
     const lower = this.config.symbol.toLowerCase();
-    const url = `${this.config.binanceWsBaseUrl}/stream?streams=${lower}@aggTrade/${lower}@trade/${lower}@bookTicker`;
+    const url = `${this.config.binanceWsBaseUrl}/stream?streams=${lower}@aggTrade/${lower}@bookTicker`;
     const ws = new WebSocket(url);
     this.ws = ws;
     this.handlers.onStatus({ connected: false, reconnects: this.reconnects, message: "連線中" });
@@ -204,6 +204,7 @@ export class BinanceMarketStream {
       this.handlers.onStatus({ connected: false, reconnects: this.reconnects, message: "連線無資料，重新連線" });
       ws.terminate();
     }, STREAM_WATCHDOG_INTERVAL_MS);
+    this.watchdog.unref?.();
   }
 
   private stopWatchdog(): void {

@@ -174,6 +174,7 @@ export function openStore(databasePath: string): Store {
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_paper_orders_symbol_status ON paper_orders(symbol, status);
+    CREATE INDEX IF NOT EXISTS idx_paper_orders_symbol_created_at ON paper_orders(symbol, created_at DESC);
     CREATE TABLE IF NOT EXISTS paper_trades (
       id TEXT PRIMARY KEY,
       order_id TEXT NOT NULL,

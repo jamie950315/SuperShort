@@ -66,6 +66,42 @@ test("content panel auto-detects symbol changes on SPA navigation", () => {
   const content = readFileSync("content.js", "utf8");
   assert.match(content, /function installSymbolAutoDetect/);
   assert.match(content, /history\[method\] = function patchedHistoryMethod/);
-  assert.match(content, /new MutationObserver/);
+  assert.doesNotMatch(content, /new MutationObserver/);
+  assert.match(content, /symbol\.value = ""/);
   assert.match(content, /applyDetectedSymbol\(false/);
+});
+
+test("content panel does not auto-detect symbol during high-frequency ticker refresh", () => {
+  const content = readFileSync("content.js", "utf8");
+  const refreshMarketTicker = extractFunction(content, "refreshMarketTicker");
+  const refreshSnapshot = extractFunction(content, "refreshSnapshot");
+
+  assert.match(content, /symbolManuallyLocked/);
+  assert.match(content, /currentSymbolForRequest/);
+  assert.doesNotMatch(content, /symbol\.value \|\| "BTCUSDT"/);
+  assert.doesNotMatch(refreshMarketTicker, /applyDetectedSymbol\(false, \{ refresh: false \}\)/);
+  assert.doesNotMatch(refreshSnapshot, /applyDetectedSymbol\(false, \{ refresh: false \}\)/);
+});
+
+test("content order placement uses only the guarded current symbol", () => {
+  const content = readFileSync("content.js", "utf8");
+  const place = extractFunction(content, "place");
+
+  assert.match(place, /currentSymbolForRequest\(\)/);
+  assert.doesNotMatch(place, /guessSymbol\(\)/);
+});
+
+test("content symbol parser does not default empty symbols to BTCUSDT", () => {
+  const content = readFileSync("content.js", "utf8");
+  const helpers = loadSymbolHelpers(content);
+
+  assert.equal(helpers.normalizeSymbolInput(""), "");
+});
+
+test("popup exposes profit-only settlement setting", () => {
+  const html = readFileSync("popup.html", "utf8");
+  const js = readFileSync("popup.js", "utf8");
+
+  assert.match(html, /id="profitOnlySettlementEnabled"/);
+  assert.match(js, /profitOnlySettlementEnabled/);
 });

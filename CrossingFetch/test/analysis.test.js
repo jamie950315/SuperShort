@@ -107,6 +107,58 @@ test("extracts exact Flash Point values from cached indicator series", () => {
   });
 });
 
+test("skips ambiguous non-Flash Point indicator series", () => {
+  const row = {
+    flashPoint: { c1: 70, c2: 65, readable: true },
+    indicatorSeries: [{
+      path: "p.1.otherIndicator.st",
+      latest: {
+        time: 1782000000000,
+        values: [30, 29]
+      }
+    }]
+  };
+
+  assert.equal(extractExactFlashPoint(row), null);
+});
+
+test("uses non-l9uPDe series only when it matches visible Flash Point values", () => {
+  const row = {
+    flashPoint: { c1: 57, c2: 55, readable: true },
+    indicatorSeries: [{
+      path: "p.1.dynamicFlashPoint.st",
+      latest: {
+        time: 1782000000000,
+        values: [57.5, 54.5]
+      }
+    }]
+  };
+
+  assert.deepEqual(extractExactFlashPoint(row), {
+    c1: 57.5,
+    c2: 54.5,
+    path: "p.1.dynamicFlashPoint.st"
+  });
+});
+
+test("skips multiple matching non-l9uPDe Flash Point candidates", () => {
+  const row = {
+    flashPoint: { c1: 57, c2: 55, readable: true },
+    indicatorSeries: [
+      {
+        path: "p.1.dynamicFlashPointA.st",
+        latest: { time: 1782000000000, values: [57.5, 54.5] }
+      },
+      {
+        path: "p.1.dynamicFlashPointB.st",
+        latest: { time: 1782000000000, values: [56.5, 55.5] }
+      }
+    ]
+  };
+
+  assert.equal(extractExactFlashPoint(row), null);
+});
+
 test("extracts exact Flash Point history from recent indicator points", () => {
   const row = {
     indicatorSeries: [{

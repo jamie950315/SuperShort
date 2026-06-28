@@ -20,7 +20,7 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.3";
+const EXTENSION_VERSION = "0.4.4";
 const EXCHANGE_INFO_CACHE = new Map();
 const POSITION_CACHE = new Map();
 const POSITION_CACHE_TTL_MS = 30000;
@@ -46,6 +46,8 @@ const USER_STREAM_RECONNECT_BASE_MS = 1000;
 const USER_STREAM_RECONNECT_MAX_MS = 30000;
 const MARKET_STREAM_RECONNECT_BASE_MS = 1000;
 const MARKET_STREAM_RECONNECT_MAX_MS = 30000;
+const MARKET_STREAM_STALE_TIMEOUT_MS = 15000;
+const MARKET_STREAM_WATCHDOG_INTERVAL_MS = 5000;
 const ENTRY_MAKER_RETRY_LIMIT = 5;
 const MARKET_BOOK_CACHE = new Map();
 const MARKET_STREAM_STATE = {
@@ -55,6 +57,7 @@ const MARKET_STREAM_STATE = {
   wsUrl: "",
   ws: null,
   reconnectTimer: null,
+  watchdogTimer: null,
   reconnectAttempt: 0,
   nextReconnectAt: 0,
   connectedAt: 0,
@@ -993,6 +996,7 @@ function stopMarketStream() {
     clearTimeout(MARKET_STREAM_STATE.reconnectTimer);
     MARKET_STREAM_STATE.reconnectTimer = null;
   }
+  stopMarketStreamWatchdog();
   if (MARKET_STREAM_STATE.ws) {
     try {
       MARKET_STREAM_STATE.ws.onopen = null;
@@ -1025,9 +1029,11 @@ function openMarketStreamSocket(config) {
     if (MARKET_STREAM_STATE.ws !== ws) return;
     MARKET_STREAM_STATE.status = "connected";
     MARKET_STREAM_STATE.connectedAt = Date.now();
+    MARKET_STREAM_STATE.lastEventAt = Date.now();
     MARKET_STREAM_STATE.reconnectAttempt = 0;
     MARKET_STREAM_STATE.fallbackReason = "";
     MARKET_STREAM_STATE.lastError = "";
+    startMarketStreamWatchdog(ws, config);
   };
   ws.onmessage = (event) => {
     if (MARKET_STREAM_STATE.ws !== ws) return;
@@ -1036,6 +1042,7 @@ function openMarketStreamSocket(config) {
   };
   ws.onerror = () => {
     if (MARKET_STREAM_STATE.ws !== ws) return;
+    stopMarketStreamWatchdog();
     MARKET_STREAM_STATE.ws = null;
     MARKET_STREAM_STATE.status = "reconnecting";
     MARKET_STREAM_STATE.lastError = "Market WebSocket error";
@@ -1045,11 +1052,36 @@ function openMarketStreamSocket(config) {
   };
   ws.onclose = () => {
     if (MARKET_STREAM_STATE.ws !== ws) return;
+    stopMarketStreamWatchdog();
     MARKET_STREAM_STATE.ws = null;
     MARKET_STREAM_STATE.status = "reconnecting";
     MARKET_STREAM_STATE.fallbackReason = "market websocket closed";
     scheduleMarketStreamReconnect(config);
   };
+}
+
+function startMarketStreamWatchdog(ws, config) {
+  stopMarketStreamWatchdog();
+  MARKET_STREAM_STATE.watchdogTimer = setInterval(() => {
+    if (MARKET_STREAM_STATE.ws !== ws || MARKET_STREAM_STATE.status !== "connected") return;
+    const lastEventAt = Number(MARKET_STREAM_STATE.lastEventAt || MARKET_STREAM_STATE.connectedAt || 0);
+    if (!lastEventAt || Date.now() - lastEventAt <= MARKET_STREAM_STALE_TIMEOUT_MS) return;
+    MARKET_STREAM_STATE.lastError = "Market WebSocket stale";
+    MARKET_STREAM_STATE.fallbackReason = "market websocket stale";
+    try { ws.close(); } catch (_) {
+      stopMarketStreamWatchdog();
+      MARKET_STREAM_STATE.ws = null;
+      MARKET_STREAM_STATE.status = "reconnecting";
+      scheduleMarketStreamReconnect(config);
+    }
+  }, MARKET_STREAM_WATCHDOG_INTERVAL_MS);
+  MARKET_STREAM_STATE.watchdogTimer?.unref?.();
+}
+
+function stopMarketStreamWatchdog() {
+  if (!MARKET_STREAM_STATE.watchdogTimer) return;
+  clearInterval(MARKET_STREAM_STATE.watchdogTimer);
+  MARKET_STREAM_STATE.watchdogTimer = null;
 }
 
 function scheduleMarketStreamReconnect(config) {
@@ -1204,6 +1236,7 @@ function openUserStreamSocket(config, wsUrl) {
     USER_STREAM_STATE.status = "connected";
     USER_STREAM_STATE.mode = "websocket";
     USER_STREAM_STATE.connectedAt = Date.now();
+    USER_STREAM_STATE.lastEventAt = Date.now();
     USER_STREAM_STATE.reconnectAttempt = 0;
     USER_STREAM_STATE.fallbackReason = "";
     USER_STREAM_STATE.lastError = "";
@@ -1218,7 +1251,10 @@ function openUserStreamSocket(config, wsUrl) {
   ws.onerror = () => {
     if (USER_STREAM_STATE.ws !== ws) return;
     USER_STREAM_STATE.lastError = "User stream WebSocket error";
+    USER_STREAM_STATE.ws = null;
     setUserStreamFallback("websocket error");
+    try { ws.close(); } catch (_) {}
+    scheduleUserStreamReconnect(config);
   };
   ws.onclose = () => {
     if (USER_STREAM_STATE.ws !== ws) return;

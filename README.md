@@ -16,7 +16,7 @@ The dashboard/backend is a companion paper-trading and monitoring system. It use
 
 ## Browser Extension
 
-Current extension version: `0.4.3`.
+Current extension version: `0.4.4`.
 
 The root extension files are:
 
@@ -34,6 +34,9 @@ Extension behavior:
 - Orders are sent as `type=LIMIT` and `timeInForce=GTX`.
 - If the order would immediately take liquidity, Binance should reject or expire it instead of filling as taker.
 - In one-way mode, when pressing the opposite side of an existing position, the extension sends `reduceOnly=true` and caps quantity to the current position size.
+- The panel does not place orders when the current symbol is unknown. During SPA navigation, the previous symbol is cleared until the new chart symbol is detected or entered manually.
+- The market bookTicker WebSocket has a stale-connection watchdog. If the connected socket stops receiving market messages, it is closed and reconnected instead of serving old bid/ask data.
+- User data streams reconnect on socket close/error and keep the listen key alive, but quiet accounts are not reconnected just because no account events arrived.
 
 Auto settlement behavior:
 

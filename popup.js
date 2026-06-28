@@ -1,5 +1,5 @@
 const $ = (id) => document.querySelector(id);
-const fields = ["apiKey", "apiSecret", "baseUrl", "quoteAmount", "leverage", "offsetTicks", "exitChaseRetries", "autoSettlementEnabled", "autoSettlementRoiPct", "slOrderEnabled", "slOrderRoiPct", "dryRun", "autoReduceOnly", "replaceReduceOnly"];
+const fields = ["apiKey", "apiSecret", "baseUrl", "quoteAmount", "leverage", "offsetTicks", "exitChaseRetries", "autoSettlementEnabled", "autoSettlementRoiPct", "profitOnlySettlementEnabled", "slOrderEnabled", "slOrderRoiPct", "dryRun", "autoReduceOnly", "replaceReduceOnly"];
 
 function getEl(id) {
   const el = $("#" + id);
@@ -19,6 +19,7 @@ chrome.runtime.sendMessage({ type: "GET_CONFIG" }, (res) => {
   getEl("exitChaseRetries").value = c.exitChaseRetries ?? 2;
   getEl("autoSettlementEnabled").checked = Boolean(c.autoSettlementEnabled);
   getEl("autoSettlementRoiPct").value = c.autoSettlementRoiPct ?? "1";
+  getEl("profitOnlySettlementEnabled").checked = Boolean(c.profitOnlySettlementEnabled);
   getEl("slOrderEnabled").checked = Boolean(c.slOrderEnabled);
   getEl("slOrderRoiPct").value = c.slOrderRoiPct ?? "1";
   getEl("dryRun").checked = Boolean(c.dryRun);

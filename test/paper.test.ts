@@ -196,6 +196,7 @@ test("paper SL ladder can miss the first maker SL and fill a deeper remaining le
   assert.equal(secondBounce.trades[0].reason, "sl_reduce_only");
   assert.equal(secondBounce.trades[0].quantity, order.filledQuantity * 0.3);
   assert.equal(secondBounce.orders[0].status, "filled");
+  assert.equal(secondBounce.orders[0].settledAt, null);
   assert.equal(secondBounce.orders[0].audit.remainingQuantity, order.filledQuantity * 0.7);
 });
 

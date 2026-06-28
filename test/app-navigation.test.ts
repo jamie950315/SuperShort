@@ -35,3 +35,13 @@ test("history page shows entry and exit times including ongoing positions", () =
   assert.match(source, /payload\.paperOrders/);
   assert.match(source, /filledAt/);
 });
+
+test("chart signal markers use persisted signal events", () => {
+  const source = readFileSync("src/client/App.tsx", "utf8");
+
+  assert.match(source, /payload\.signals/);
+  assert.match(source, /signal\.direction === "long"/);
+  assert.match(source, /signal\.direction === "short"/);
+  assert.doesNotMatch(source, /\.filter\(\(point\) => point\.crossing === "up"\)/);
+  assert.doesNotMatch(source, /\.filter\(\(point\) => point\.crossing === "down"\)/);
+});

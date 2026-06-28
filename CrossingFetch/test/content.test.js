@@ -77,6 +77,22 @@ test("content script saves socket-aligned exact Flash Point samples", () => {
   assert.match(content, /lastSocketAlignedKey/);
 });
 
+test("content script resets dedupe state when clearing all samples", () => {
+  const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  assert.match(content, /function resetSessionDedupeState/);
+  assert.match(content, /lastSocketAlignedKey = ""/);
+  assert.match(content, /lastBodyFlash = null/);
+  assert.match(content, /clearAllSamples[\s\S]*resetSessionDedupeState\(\)/);
+});
+
+test("content script requires a strong Flash Point indicator candidate", () => {
+  const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  assert.match(content, /function isStrongFlashPointSeries/);
+  assert.match(content, /\.filter\(\(candidate\) => candidate\.strong\)/);
+  assert.match(content, /function selectFlashPointCandidate/);
+  assert.match(content, /candidates\.length === 1/);
+});
+
 test("manifest injects WebSocket mirror in the main world at document_start", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
   const mainWorldScript = manifest.content_scripts.find((entry) => {

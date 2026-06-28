@@ -21,6 +21,7 @@ let gateConfigVersion = 0;
 const signalGates = new Map<IntervalName, PersistentSignalGate>();
 type PaperResetState = { time: number; equity: number };
 let appliedPaperResetAt = store.getState<PaperResetState | null>("paper_reset", null)?.time ?? 0;
+let binanceWsConnected = false;
 
 for (const interval of ["1s", "5s", "15s", "30s", "1m"] as IntervalName[]) {
   flashSeries.set(interval, new FlashPointSeries());
@@ -28,6 +29,14 @@ for (const interval of ["1s", "5s", "15s", "30s", "1m"] as IntervalName[]) {
 
 for (const order of store.getOpenPaperOrders(config.symbol)) {
   paper.loadOrder(order);
+}
+
+for (const interval of ["1s", "5s", "15s", "30s", "1m"] as IntervalName[]) {
+  const series = flashSeries.get(interval);
+  if (!series) continue;
+  for (const candle of store.getCandles(config.symbol, interval, 200)) {
+    series.update(candle);
+  }
 }
 
 function paperResetState(): PaperResetState | null {
@@ -166,9 +175,9 @@ async function pollAccount(): Promise<void> {
       realAvailableBalance: snapshot.availableBalance,
       realUnrealizedPnl: snapshot.unrealizedPnl
     });
-    store.setState("binance", { wsConnected: true, restOk: true });
+    store.setState("binance", { wsConnected: binanceWsConnected, restOk: true });
   } catch (error) {
-    store.setState("binance", { wsConnected: Boolean(currentBook), restOk: false, error: (error as Error).message });
+    store.setState("binance", { wsConnected: binanceWsConnected, restOk: false, error: (error as Error).message });
   }
 }
 
@@ -198,7 +207,7 @@ const stream = new BinanceMarketStream(config, {
       const state = series.preview(activeCandle);
       const candidate = maybeSignal(activeCandle, state, event.price, event.tradeTime);
       const signal = gateFor(activeCandle.interval).update(candidate, event.tradeTime);
-      if (signal && currentBook) {
+      if (signal && currentBook && currentBook.eventTime >= event.tradeTime - 5_000) {
         const id = store.insertSignal(signal);
         if (!velocity.tooFast) {
           const order = paper.createOrder({ ...signal, id }, active, latencyStats());
@@ -225,6 +234,11 @@ const stream = new BinanceMarketStream(config, {
   },
   onStatus(status) {
     reconnects = status.reconnects;
+    binanceWsConnected = status.connected;
+    if (!status.connected) {
+      currentBook = null;
+      paper.clearBook();
+    }
     store.setState("worker", { running: status.connected, lastEventAt: Date.now(), reconnects, message: status.message });
     store.setState("binance", { wsConnected: status.connected, restOk: true });
   }

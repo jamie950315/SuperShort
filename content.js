@@ -15,6 +15,7 @@
   let symbolDetectTimer = null;
   let symbolObserver = null;
   let symbolAutoDetectActive = false;
+  let symbolManuallyLocked = false;
   let suppressLayoutSave = false;
   let extensionAlive = true;
 
@@ -118,7 +119,7 @@
       <button id="bmw-close" title="Hide">×</button>
     </div>
     <label>Symbol</label>
-    <input id="bmw-symbol" value="${guessSymbol()}" spellcheck="false" />
+    <input id="bmw-symbol" value="${guessSymbol() || ""}" spellcheck="false" />
     <label>本金金額（未乘槓桿，USDT/USDC）</label>
     <input id="bmw-amount" type="number" min="0" step="1" />
     <label>Leverage</label>
@@ -216,8 +217,10 @@
     reduce.checked = Boolean(res.config.autoReduceOnly);
     replace.checked = Boolean(res.config.replaceReduceOnly);
     const normalized = normalizeSymbolInput(symbol.value || guessSymbol());
-    symbol.value = normalized;
-    sendRuntimeMessage({ type: "WARMUP_SYMBOL", symbol: normalized });
+    if (normalized) {
+      symbol.value = normalized;
+      sendRuntimeMessage({ type: "WARMUP_SYMBOL", symbol: normalized });
+    }
     setStatus(`Ready. API ${res.config.apiKeyMasked || "未設定"}`);
     refreshSnapshot();
     refreshMarketTicker(true);
@@ -236,6 +239,7 @@
   $("#bmw-buy").addEventListener("click", () => place("BUY"));
   $("#bmw-sell").addEventListener("click", () => place("SELL"));
   symbol.addEventListener("change", () => {
+    symbolManuallyLocked = true;
     setActiveSymbol(symbol.value || guessSymbol(), { refresh: true, force: true });
   });
   installSymbolAutoDetect();
@@ -270,7 +274,11 @@
       handleRuntimeError(new Error("Extension context invalidated"));
       return;
     }
-    const normalizedSymbol = normalizeSymbolInput(symbol.value || guessSymbol());
+    const normalizedSymbol = currentSymbolForRequest();
+    if (!normalizedSymbol) {
+      setStatus("Symbol not detected. Enter a symbol before sending.");
+      return;
+    }
     symbol.value = normalizedSymbol;
     setStatus(`${side} sending...`);
     sendRuntimeMessage({
@@ -355,6 +363,7 @@
   }
 
   function applyDetectedSymbol(force = false, options = {}) {
+    if (symbolManuallyLocked && !force) return null;
     if (!force && document.activeElement === symbol) return null;
     const detected = guessSymbol();
     if (!detected) return null;
@@ -363,6 +372,11 @@
 
   function scheduleSymbolAutoDetect() {
     if (!symbolAutoDetectActive || !panel.isConnected) return;
+    symbolManuallyLocked = false;
+    symbol.value = "";
+    currentPrice.textContent = "--";
+    resetPositionUi();
+    setStatus("Detecting symbol after navigation...");
     clearTimeout(symbolDetectTimer);
     symbolDetectTimer = setTimeout(() => applyDetectedSymbol(false, { refresh: true }), SYMBOL_AUTO_DETECT_DELAY_MS);
   }
@@ -384,12 +398,6 @@
       history[method].__bmwPatched = true;
     }
 
-    symbolObserver = new MutationObserver(scheduleSymbolAutoDetect);
-    symbolObserver.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
   }
 
   function refreshMarketTicker(force) {
@@ -398,8 +406,9 @@
       return;
     }
     if (marketTickerInFlight && !force) return;
+    const normalizedSymbol = currentSymbolForRequest();
+    if (!normalizedSymbol) return;
     marketTickerInFlight = true;
-    const normalizedSymbol = applyDetectedSymbol(false, { refresh: false }) || normalizeSymbolInput(symbol.value || guessSymbol());
     sendRuntimeMessage({ type: "GET_MARKET_TICKER", symbol: normalizedSymbol }, (res) => {
       marketTickerInFlight = false;
       if (!res?.ok) return;
@@ -414,8 +423,9 @@
       return;
     }
     if (snapshotInFlight && !force) return;
+    const normalizedSymbol = currentSymbolForRequest();
+    if (!normalizedSymbol) return;
     snapshotInFlight = true;
-    const normalizedSymbol = applyDetectedSymbol(false, { refresh: false }) || normalizeSymbolInput(symbol.value || guessSymbol());
     sendRuntimeMessage({ type: "GET_TRADING_SNAPSHOT", symbol: normalizedSymbol }, (res) => {
       snapshotInFlight = false;
       if (!res?.ok) {
@@ -636,7 +646,14 @@
       if (m?.[1]) return normalizeSymbolInput(m[1]);
     }
 
-    return "BTCUSDT";
+    return null;
+  }
+
+  function currentSymbolForRequest() {
+    const normalized = normalizeSymbolInput(symbol.value);
+    if (normalized) return normalized;
+    setStatus("Symbol not detected. Enter a symbol or navigate to a supported chart.");
+    return null;
   }
 
   function findSymbolCandidateFromDocument() {
@@ -696,7 +713,7 @@
     s = s.replace(/\.P$/, "");
     s = s.replace(/PERP$/, "");
     s = s.replace(/[^A-Z0-9_]/g, "");
-    return s || "BTCUSDT";
+    return s || "";
   }
 
   function formatPrice(value) {

@@ -9,6 +9,8 @@
   const DEFAULT_INTERVAL_MS = 1000;
   const FLASH_REFRESH_INTERVAL_MS = 500;
   const NO_BAR_FALLBACK_SAMPLE_MS = 1000;
+  const BODY_FLASH_SCAN_INTERVAL_MS = 2500;
+  const MAX_VISIBLE_TEXT_NODES = 500;
 
   let dbPromise = null;
   let recording = false;
@@ -32,6 +34,8 @@
   let lastNoBarFlashKey = "";
   let lastCrossingEventKey = "";
   let lastSocketAlignedKey = "";
+  let lastBodyFlashScanAt = 0;
+  let lastBodyFlash = null;
 
   createPanel();
   startFlashRefreshLoop();
@@ -94,6 +98,7 @@
         <button type="button" class="secondary" id="cf-stop">Stop</button>
         <button type="button" class="secondary" id="cf-export">Export JSONL</button>
         <button type="button" class="secondary" id="cf-clear">Clear Session</button>
+        <button type="button" class="secondary" id="cf-clear-all">Clear All</button>
       </div>
       <div class="cf-status" id="cf-status">Ready.</div>
     `;
@@ -104,6 +109,7 @@
     panel.querySelector("#cf-stop").addEventListener("click", stopRecording);
     panel.querySelector("#cf-export").addEventListener("click", exportJsonl);
     panel.querySelector("#cf-clear").addEventListener("click", clearCurrentSession);
+    panel.querySelector("#cf-clear-all").addEventListener("click", clearAllSamples);
     updateStatus();
   }
 
@@ -113,10 +119,7 @@
     previousFlash = null;
     previousInstantFlash = null;
     lastObservedSample = null;
-    lastNoBarSampleAt = 0;
-    lastNoBarFlashKey = "";
-    lastCrossingEventKey = "";
-    lastSocketAlignedKey = "";
+    resetSessionDedupeState();
     const interval = getIntervalMs();
     liveTimer = setInterval(tickRecorder, interval);
     tickRecorder();
@@ -286,32 +289,48 @@
   function readFlashPointValues() {
     const fromTextNodes = Core.extractFlashPointFromVisibleTexts(getVisibleTextNodes(), "Flash Point Pro");
     if (fromTextNodes.readable) return fromTextNodes;
+    const now = Date.now();
+    if (lastBodyFlash && now - lastBodyFlashScanAt < BODY_FLASH_SCAN_INTERVAL_MS) return lastBodyFlash;
+    lastBodyFlashScanAt = now;
     const fromBody = Core.extractFlashPointFromText(document.body?.innerText || "");
-    return {
+    lastBodyFlash = {
       ...fromBody,
       source: fromBody.readable ? "right-scale-label" : "unreadable"
     };
+    return lastBodyFlash;
   }
 
   function getVisibleTextNodes(root) {
-    const start = root || document.body;
-    if (!start) return [];
-    const nodes = [];
-    const walker = document.createTreeWalker(start, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        const text = String(node.nodeValue || "").trim();
-        if (!text) return NodeFilter.FILTER_REJECT;
-        const parent = node.parentElement;
-        if (!parent || parent.closest("#crossing-fetch-panel")) return NodeFilter.FILTER_REJECT;
-        const style = window.getComputedStyle(parent);
-        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      }
+    const rawStarts = root ? [root] : [
+      ...document.querySelectorAll('[data-name*="legend" i], [class*="legend" i], [data-name*="price" i], [class*="price" i]')
+    ];
+    const starts = rawStarts.filter((candidate, index) => {
+      return rawStarts.findIndex((other) => other !== candidate && other.contains(candidate)) === -1
+        && rawStarts.indexOf(candidate) === index;
     });
+    if (!starts.length && document.body) starts.push(document.body);
+    const nodes = [];
+    for (const start of starts) {
+      if (!start || nodes.length >= MAX_VISIBLE_TEXT_NODES) break;
+      const walker = document.createTreeWalker(start, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const text = String(node.nodeValue || "").trim();
+          if (!text) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (!parent || parent.closest("#crossing-fetch-panel")) return NodeFilter.FILTER_REJECT;
+          const style = window.getComputedStyle(parent);
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
 
-    while (walker.nextNode()) nodes.push(String(walker.currentNode.nodeValue || "").trim());
+      while (walker.nextNode()) {
+        nodes.push(String(walker.currentNode.nodeValue || "").trim());
+        if (nodes.length >= MAX_VISIBLE_TEXT_NODES) break;
+      }
+    }
     return nodes;
   }
 
@@ -379,6 +398,33 @@
     });
   }
 
+  async function readCurrentSessionChunks(onChunk, chunkSize = 1000) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      let count = 0;
+      let chunk = [];
+      const tx = db.transaction(STORE, "readonly");
+      const index = tx.objectStore(STORE).index("sessionId");
+      const request = index.openCursor(IDBKeyRange.only(sessionId));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        chunk.push(JSON.stringify(cursor.value), "\n");
+        count += 1;
+        if (chunk.length >= chunkSize * 2) {
+          onChunk(chunk.join(""));
+          chunk = [];
+        }
+        cursor.continue();
+      };
+      tx.oncomplete = () => {
+        if (chunk.length) onChunk(chunk.join(""));
+        resolve(count);
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async function deleteCurrentSession() {
     const db = await openDb();
     return new Promise((resolve, reject) => {
@@ -398,16 +444,16 @@
 
   async function exportJsonl() {
     try {
-      const rows = await readCurrentSession();
-      const jsonl = rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length ? "\n" : "");
-      const blob = new Blob([jsonl], { type: "application/jsonl;charset=utf-8" });
+      const parts = [];
+      const count = await readCurrentSessionChunks((part) => parts.push(part));
+      const blob = new Blob(parts, { type: "application/jsonl;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `crossing-fetch-${sessionId}.jsonl`;
       anchor.click();
       URL.revokeObjectURL(url);
-      updateStatus(`Exported ${rows.length} samples.`);
+      updateStatus(`Exported ${count} samples.`);
     } catch (error) {
       showError(error);
     }
@@ -421,16 +467,35 @@
       lastObservedSample = null;
       previousFlash = null;
       previousInstantFlash = null;
-      lastNoBarSampleAt = 0;
-      lastNoBarFlashKey = "";
-      lastCrossingEventKey = "";
-      lastSocketAlignedKey = "";
+      resetSessionDedupeState();
       latestBarSeries = [];
       latestBarSeriesByPath.clear();
       latestIndicatorSeries = [];
       latestIndicatorSeriesByPath.clear();
       latestSocketSnapshot = null;
       updateStatus("Current session cleared.");
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  async function clearAllSamples() {
+    try {
+      const db = await openDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).clear();
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+      savedSamples = 0;
+      sessionId = makeSessionId();
+      lastObservedSample = null;
+      previousFlash = null;
+      previousInstantFlash = null;
+      resetSessionDedupeState();
+      updateStatus("All samples cleared.");
     } catch (error) {
       showError(error);
     }
@@ -536,8 +601,24 @@
 
   function extractInstantFlashPoint(indicatorSeries, time) {
     if (!Number.isFinite(time)) return null;
-    const entry = indicatorSeries.find((item) => String(item.path || "").includes("l9uPDe"));
-    const point = entry?.recentPoints?.find((item) => item.time === time);
+    const candidates = indicatorSeries
+      .map((entry) => {
+        const point = entry?.recentPoints?.find((item) => item.time === time);
+        const values = point?.values || [];
+        if (!looksLikeFlashPointValues(values)) return null;
+        return {
+          entry,
+          point,
+          score: scoreFlashPointSeries(entry, values),
+          strong: isStrongFlashPointSeries(entry, values)
+        };
+      })
+      .filter(Boolean)
+      .filter((candidate) => candidate.strong)
+      .sort((a, b) => b.score - a.score);
+    const selected = selectFlashPointCandidate(candidates);
+    const entry = selected?.entry;
+    const point = selected?.point;
     const values = point?.values || [];
     if (!Number.isFinite(values[0]) || !Number.isFinite(values[1])) return null;
     return {
@@ -548,6 +629,47 @@
       time,
       path: entry.path
     };
+  }
+
+  function looksLikeFlashPointValues(values) {
+    return Array.isArray(values)
+      && Number.isFinite(values[0])
+      && Number.isFinite(values[1])
+      && values[0] >= -20
+      && values[0] <= 120
+      && values[1] >= -20
+      && values[1] <= 120;
+  }
+
+  function scoreFlashPointSeries(entry, values) {
+    let score = 0;
+    if (String(entry?.path || "").includes("l9uPDe")) score += 100;
+    if (latestFlash?.readable) {
+      score -= Math.abs(values[0] - latestFlash.c1);
+      score -= Math.abs(values[1] - latestFlash.c2);
+    }
+    return score;
+  }
+
+  function isStrongFlashPointSeries(entry, values) {
+    if (String(entry?.path || "").includes("l9uPDe")) return true;
+    if (!latestFlash?.readable) return false;
+    return Math.abs(values[0] - latestFlash.c1) <= 2 && Math.abs(values[1] - latestFlash.c2) <= 2;
+  }
+
+  function selectFlashPointCandidate(candidates) {
+    const explicit = candidates.filter((candidate) => String(candidate.entry?.path || "").includes("l9uPDe"));
+    if (explicit.length) return explicit.sort((a, b) => b.score - a.score)[0];
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function resetSessionDedupeState() {
+    lastNoBarSampleAt = 0;
+    lastNoBarFlashKey = "";
+    lastCrossingEventKey = "";
+    lastSocketAlignedKey = "";
+    lastBodyFlashScanAt = 0;
+    lastBodyFlash = null;
   }
 
   function makeInstantSeries(series, updatedAt, kind) {

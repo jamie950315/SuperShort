@@ -56,22 +56,36 @@ function extractExactFlashPointPoints(row) {
   const cachedSeries = Array.isArray(row?.indicatorSeries) ? row.indicatorSeries : [];
   const series = [...cachedSeries, ...instantSeries];
   const byTime = new Map();
+  const candidatesByTime = new Map();
   for (const entry of series) {
-    if (!String(entry?.path || "").includes("l9uPDe")) continue;
     const points = [];
     if (Array.isArray(entry.recentPoints)) points.push(...entry.recentPoints);
     if (entry.latest) points.push(entry.latest);
     for (const point of points) {
       const values = point?.values || [];
       const time = Number.isFinite(point?.time) ? point.time : row?.bar?.time;
-      if (!Number.isFinite(time) || !Number.isFinite(values[0]) || !Number.isFinite(values[1])) continue;
-      byTime.set(time, {
+      if (!Number.isFinite(time) || !looksLikeFlashPointValues(values) || !isStrongFlashPointSeries(entry, values, row)) continue;
+      const candidates = candidatesByTime.get(time) || [];
+      candidates.push({
         time,
         c1: values[0],
         c2: values[1],
-        path: entry.path
+        path: entry.path,
+        score: scoreFlashPointSeries(entry, values, row)
       });
+      candidatesByTime.set(time, candidates);
     }
+  }
+  for (const [time, candidates] of candidatesByTime.entries()) {
+    const selected = selectFlashPointCandidate(candidates);
+    if (!selected) continue;
+    byTime.set(time, {
+      time: selected.time,
+      c1: selected.c1,
+      c2: selected.c2,
+      path: selected.path,
+      score: selected.score
+    });
   }
   const instant = row?.instantFlashPoint;
   const instantTime = Number.isFinite(instant?.time) ? instant.time : sampleBar(row)?.time;
@@ -84,7 +98,39 @@ function extractExactFlashPointPoints(row) {
       source: "instantFlashPoint"
     });
   }
-  return [...byTime.values()].sort((a, b) => a.time - b.time);
+  return [...byTime.values()]
+    .map(({ score, ...point }) => point)
+    .sort((a, b) => a.time - b.time);
+}
+
+function looksLikeFlashPointValues(values) {
+  return Array.isArray(values)
+    && Number.isFinite(values[0])
+    && Number.isFinite(values[1])
+    && values[0] >= -20
+    && values[0] <= 120
+    && values[1] >= -20
+    && values[1] <= 120;
+}
+
+function scoreFlashPointSeries(entry, values, row) {
+  let score = 0;
+  if (String(entry?.path || "").includes("l9uPDe")) score += 100;
+  if (Number.isFinite(row?.flashPoint?.c1)) score -= Math.abs(values[0] - row.flashPoint.c1);
+  if (Number.isFinite(row?.flashPoint?.c2)) score -= Math.abs(values[1] - row.flashPoint.c2);
+  return score;
+}
+
+function isStrongFlashPointSeries(entry, values, row) {
+  if (String(entry?.path || "").includes("l9uPDe")) return true;
+  if (!Number.isFinite(row?.flashPoint?.c1) || !Number.isFinite(row?.flashPoint?.c2)) return false;
+  return Math.abs(values[0] - row.flashPoint.c1) <= 2 && Math.abs(values[1] - row.flashPoint.c2) <= 2;
+}
+
+function selectFlashPointCandidate(candidates) {
+  const explicit = candidates.filter((candidate) => String(candidate.path || "").includes("l9uPDe"));
+  if (explicit.length) return explicit.sort((a, b) => b.score - a.score)[0];
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function extractExactFlashPointAt(row, time) {

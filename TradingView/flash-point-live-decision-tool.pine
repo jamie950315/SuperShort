@@ -1,7 +1,7 @@
 //@version=5
-indicator("Flash Point Live Decision Tool", overlay=true, precision=2, max_labels_count=500)
+indicator("Flash Point 即時決策工具", overlay=true, precision=2, max_labels_count=500)
 
-// Flash Point Pro v0.8 reconstruction from the author-provided formula.
+// Flash Point Pro v0.8，依作者提供公式重建。
 flashPoint() =>
     float typicalPrice = (2 * close + high + low) / 4
     float periodLowest = ta.lowest(low, 5)
@@ -21,13 +21,14 @@ addReason(string base, string reason) =>
 formatLevel(float value) =>
     str.tostring(value, "#.##")
 
-// Display settings
-showTable = input.bool(true, "Show status table")
-showLiveLabel = input.bool(true, "Show latest live label")
-showMarkers = input.bool(true, "Show entry/trim/exit markers")
-positionMode = input.string("Auto", "Position mode", options=["Auto", "Flat", "Long", "Short"])
+// 顯示設定
+showTable = input.bool(true, "顯示狀態表")
+tableLocation = input.string("右上", "狀態表位置", options=["右上", "右下", "左上", "左下", "中上", "中下"])
+showLiveLabel = input.bool(true, "顯示最新提示標籤")
+showMarkers = input.bool(true, "顯示進場/減倉/出場標記")
+positionMode = input.string("訊號自動追蹤", "持倉偵測模式", options=["訊號自動追蹤", "手動空倉", "手動多單", "手動空單"])
 
-// Symbol detection
+// 幣種偵測
 symbolText = str.upper(syminfo.tickerid)
 isBTC = str.contains(symbolText, "BTCUSDC")
 isETH = str.contains(symbolText, "ETHUSDC")
@@ -36,7 +37,7 @@ supported = isBTC or isETH or isSOL
 target = isBTC ? "BTCUSDC" : isETH ? "ETHUSDC" : isSOL ? "SOLUSDC" : syminfo.ticker
 labelSymbol = isBTC ? "BTC" : isETH ? "ETH" : isSOL ? "SOL" : syminfo.ticker
 
-// Tuned first-pass profiles from the 6-month research baseline.
+// 來自 6 個月研究基準的第一版參數。
 mainTf = isBTC ? "5" : isETH ? "10" : isSOL ? "10" : timeframe.period
 earlyTf = isBTC ? "2" : isETH ? "2" : isSOL ? "3" : timeframe.period
 filterTf = isBTC ? "15" : mainTf
@@ -54,7 +55,7 @@ enterScoreNeed = 4
 [earlyC1, earlyC2, earlyCrossUp, earlyCrossDown] = request.security(syminfo.tickerid, earlyTf, flashPoint(), barmerge.gaps_off, barmerge.lookahead_off)
 [filterC1, filterC2, filterCrossUp, filterCrossDown] = request.security(syminfo.tickerid, filterTf, flashPoint(), barmerge.gaps_off, barmerge.lookahead_off)
 
-// Scores are intentionally lighter than the strict backtest strategy.
+// 這裡的分數刻意比嚴格回測策略寬，目標是即時提示反轉。
 bullScore = 0
 bullScore += mainC1 <= longWatchC1 ? 1 : 0
 bullScore += mainC1 <= longReadyC1 ? 1 : 0
@@ -71,7 +72,7 @@ bearScore += mainC1 >= mainC2 and mainC1 - mainC2 <= 5 ? 1 : 0
 bearScore += mainCrossDown ? 2 : 0
 bearScore += earlyC1 < earlyC2 or earlyCrossDown ? 1 : 0
 
-// BTC uses 15m as a pressure veto. ETH/SOL use the main timeframe only for v1.
+// BTC 使用 15m 當反向壓力過濾；ETH/SOL 第一版先用主週期。
 longVeto = isBTC and filterC1 < filterC2 and filterC1 > 60
 shortVeto = isBTC and filterC1 > filterC2 and filterC1 < 40
 
@@ -83,126 +84,132 @@ longEnter = supported and mainCrossUp and mainC1 <= longEnterC1 and bullScore >=
 shortEnter = supported and mainCrossDown and mainC1 >= shortEnterC1 and bearScore >= enterScoreNeed and not shortVeto
 
 longReason = ""
-longReason := addReason(longReason, mainCrossUp ? "cross up" : "")
-longReason := addReason(longReason, mainC1 <= longReadyC1 ? "C1 low" : mainC1 <= longWatchC1 ? "C1 near low" : "")
-longReason := addReason(longReason, mainC1 > mainC2 ? "C1 above C2" : mainC2 - mainC1 <= 5 ? "C1/C2 tight" : "")
-longReason := addReason(longReason, earlyC1 > earlyC2 or earlyCrossUp ? "early TF agrees" : "")
-longReason := addReason(longReason, "bull score " + str.tostring(bullScore))
+longReason := addReason(longReason, mainCrossUp ? "向上交叉" : "")
+longReason := addReason(longReason, mainC1 <= longReadyC1 ? "C1 低位" : mainC1 <= longWatchC1 ? "C1 接近低位" : "")
+longReason := addReason(longReason, mainC1 > mainC2 ? "C1 高於 C2" : mainC2 - mainC1 <= 5 ? "C1/C2 收斂" : "")
+longReason := addReason(longReason, earlyC1 > earlyC2 or earlyCrossUp ? "早期週期同向" : "")
+longReason := addReason(longReason, "多方分數 " + str.tostring(bullScore))
 
 shortReason = ""
-shortReason := addReason(shortReason, mainCrossDown ? "cross down" : "")
-shortReason := addReason(shortReason, mainC1 >= shortReadyC1 ? "C1 high" : mainC1 >= shortWatchC1 ? "C1 near high" : "")
-shortReason := addReason(shortReason, mainC1 < mainC2 ? "C1 below C2" : mainC1 - mainC2 <= 5 ? "C1/C2 tight" : "")
-shortReason := addReason(shortReason, earlyC1 < earlyC2 or earlyCrossDown ? "early TF agrees" : "")
-shortReason := addReason(shortReason, "bear score " + str.tostring(bearScore))
+shortReason := addReason(shortReason, mainCrossDown ? "向下交叉" : "")
+shortReason := addReason(shortReason, mainC1 >= shortReadyC1 ? "C1 高位" : mainC1 >= shortWatchC1 ? "C1 接近高位" : "")
+shortReason := addReason(shortReason, mainC1 < mainC2 ? "C1 低於 C2" : mainC1 - mainC2 <= 5 ? "C1/C2 收斂" : "")
+shortReason := addReason(shortReason, earlyC1 < earlyC2 or earlyCrossDown ? "早期週期同向" : "")
+shortReason := addReason(shortReason, "空方分數 " + str.tostring(bearScore))
 
-var string autoSide = "FLAT"
-manualSide = positionMode == "Long" ? "LONG" : positionMode == "Short" ? "SHORT" : positionMode == "Flat" ? "FLAT" : autoSide
+var string autoSide = "空倉"
+manualSide = positionMode == "手動多單" ? "多單" : positionMode == "手動空單" ? "空單" : positionMode == "手動空倉" ? "空倉" : autoSide
 
-state = "WAIT"
+state = "等待"
 side = ""
-reason = supported ? "no reversal setup" : "no tuned profile"
+reason = supported ? "尚無反轉結構" : "沒有調校參數"
 
 if not supported
-    state := "UNSUPPORTED"
+    state := "未支援"
     side := ""
-    reason := "no tuned profile"
-else if manualSide == "LONG"
-    side := "LONG"
+    reason := "沒有調校參數"
+else if manualSide == "多單"
+    side := "多單"
     if mainCrossDown and bearScore >= 4
-        state := "EXIT"
+        state := "出場"
         reason := shortReason
     else if bearScore >= 3 or mainC1 < mainC2
-        state := "TRIM"
+        state := "減倉"
         reason := shortReason
     else
-        state := "HOLD"
-        reason := addReason(addReason("", "trend ok"), addReason("no bear pressure", "bull score " + str.tostring(bullScore)))
-else if manualSide == "SHORT"
-    side := "SHORT"
+        state := "續抱"
+        reason := addReason(addReason("", "趨勢仍可"), addReason("無強空方壓力", "多方分數 " + str.tostring(bullScore)))
+else if manualSide == "空單"
+    side := "空單"
     if mainCrossUp and bullScore >= 4
-        state := "EXIT"
+        state := "出場"
         reason := longReason
     else if bullScore >= 3 or mainC1 > mainC2
-        state := "TRIM"
+        state := "減倉"
         reason := longReason
     else
-        state := "HOLD"
-        reason := addReason(addReason("", "trend ok"), addReason("no bull pressure", "bear score " + str.tostring(bearScore)))
+        state := "續抱"
+        reason := addReason(addReason("", "趨勢仍可"), addReason("無強多方壓力", "空方分數 " + str.tostring(bearScore)))
 else
     if longEnter
-        state := "ENTER"
-        side := "LONG"
+        state := "進場"
+        side := "多單"
         reason := longReason
     else if shortEnter
-        state := "ENTER"
-        side := "SHORT"
+        state := "進場"
+        side := "空單"
         reason := shortReason
     else if longReady and (not shortReady or bullScore >= bearScore)
-        state := "READY"
-        side := "LONG"
+        state := "準備"
+        side := "多單"
         reason := longReason
     else if shortReady
-        state := "READY"
-        side := "SHORT"
+        state := "準備"
+        side := "空單"
         reason := shortReason
     else if longWatch and (not shortWatch or bullScore >= bearScore)
-        state := "WATCH"
-        side := "LONG"
+        state := "觀察"
+        side := "多單"
         reason := longReason
     else if shortWatch
-        state := "WATCH"
-        side := "SHORT"
+        state := "觀察"
+        side := "空單"
         reason := shortReason
 
-if positionMode == "Auto"
-    if state == "ENTER"
+if positionMode == "訊號自動追蹤"
+    if state == "進場"
         autoSide := side
-    else if state == "EXIT"
-        autoSide := "FLAT"
+    else if state == "出場"
+        autoSide := "空倉"
 
-signalText = supported ? labelSymbol + (side == "" ? " " : " " + side + " ") + state + ": " + reason : target + " unsupported: no tuned profile"
-targetText = supported ? "Target: " + target + " profile active | main " + mainTf + "m | early " + earlyTf + "m" : "Target: " + target + " unsupported"
+signalText = supported ? labelSymbol + (side == "" ? " " : " " + side + " ") + state + "：" + reason : target + " 未支援：沒有調校參數"
+targetText = supported ? "目標：" + target + " 已套用參數 | 主週期 " + mainTf + "m | 早期週期 " + earlyTf + "m" : "目標：" + target + " 未支援"
 
-stateColor = state == "ENTER" or state == "HOLD" ? color.rgb(30, 180, 95) :
-     state == "READY" or state == "WATCH" ? color.rgb(240, 185, 11) :
-     state == "TRIM" ? color.rgb(245, 166, 35) :
-     state == "EXIT" or state == "UNSUPPORTED" ? color.rgb(230, 70, 70) : color.rgb(120, 130, 145)
+stateColor = state == "進場" or state == "續抱" ? color.rgb(30, 180, 95) :
+     state == "準備" or state == "觀察" ? color.rgb(240, 185, 11) :
+     state == "減倉" ? color.rgb(245, 166, 35) :
+     state == "出場" or state == "未支援" ? color.rgb(230, 70, 70) : color.rgb(120, 130, 145)
 
-markerBelow = side == "LONG"
-markerAbove = side == "SHORT"
-plotshape(showMarkers and state == "ENTER" and markerBelow, title="Long ENTER", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, text="ENTER")
-plotshape(showMarkers and state == "ENTER" and markerAbove, title="Short ENTER", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="ENTER")
-plotshape(showMarkers and state == "TRIM" and markerBelow, title="Long TRIM", style=shape.circle, location=location.abovebar, color=color.orange, size=size.tiny, text="TRIM")
-plotshape(showMarkers and state == "TRIM" and markerAbove, title="Short TRIM", style=shape.circle, location=location.belowbar, color=color.orange, size=size.tiny, text="TRIM")
-plotshape(showMarkers and state == "EXIT" and markerBelow, title="Long EXIT", style=shape.xcross, location=location.abovebar, color=color.red, size=size.small, text="EXIT")
-plotshape(showMarkers and state == "EXIT" and markerAbove, title="Short EXIT", style=shape.xcross, location=location.belowbar, color=color.lime, size=size.small, text="EXIT")
+markerBelow = side == "多單"
+markerAbove = side == "空單"
+plotshape(showMarkers and state == "進場" and markerBelow, title="多單進場", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, text="進")
+plotshape(showMarkers and state == "進場" and markerAbove, title="空單進場", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="進")
+plotshape(showMarkers and state == "減倉" and markerBelow, title="多單減倉", style=shape.circle, location=location.abovebar, color=color.orange, size=size.tiny, text="減")
+plotshape(showMarkers and state == "減倉" and markerAbove, title="空單減倉", style=shape.circle, location=location.belowbar, color=color.orange, size=size.tiny, text="減")
+plotshape(showMarkers and state == "出場" and markerBelow, title="多單出場", style=shape.xcross, location=location.abovebar, color=color.red, size=size.small, text="出")
+plotshape(showMarkers and state == "出場" and markerAbove, title="空單出場", style=shape.xcross, location=location.belowbar, color=color.lime, size=size.small, text="出")
 
 var label liveLabel = na
 if showLiveLabel and barstate.islast
     label.delete(liveLabel)
-    y = side == "SHORT" ? high : low
-    labelStyle = side == "SHORT" ? label.style_label_down : label.style_label_up
+    y = side == "空單" ? high : low
+    labelStyle = side == "空單" ? label.style_label_down : label.style_label_up
     liveLabel := label.new(bar_index, y, signalText, style=labelStyle, color=color.new(stateColor, 5), textcolor=color.white, size=size.small)
 
-var table statusTable = table.new(position.top_right, 2, 7, border_width=1)
+tablePosition = tableLocation == "右上" ? position.top_right :
+     tableLocation == "右下" ? position.bottom_right :
+     tableLocation == "左上" ? position.top_left :
+     tableLocation == "左下" ? position.bottom_left :
+     tableLocation == "中上" ? position.top_center : position.bottom_center
+
+var table statusTable = table.new(tablePosition, 2, 7, border_width=1)
 if showTable and barstate.islast
-    table.cell(statusTable, 0, 0, "Flash Point Live", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 0, "Flash Point 即時", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
     table.cell(statusTable, 1, 0, state, text_color=color.white, bgcolor=stateColor)
-    table.cell(statusTable, 0, 1, "Target", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 1, "目標", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
     table.cell(statusTable, 1, 1, targetText, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 2, "Signal", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 2, "提示", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
     table.cell(statusTable, 1, 2, signalText, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
     table.cell(statusTable, 0, 3, "C1 / C2", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
     table.cell(statusTable, 1, 3, formatLevel(mainC1) + " / " + formatLevel(mainC2), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 4, "Score", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 4, "Bull " + str.tostring(bullScore) + " | Bear " + str.tostring(bearScore), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 5, "Position", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 5, positionMode == "Auto" ? "Auto: " + autoSide : positionMode, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 0, 6, "Live note", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
-    table.cell(statusTable, 1, 6, "Intrabar states can change before close", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 4, "分數", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 4, "多 " + str.tostring(bullScore) + " | 空 " + str.tostring(bearScore), text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 5, "持倉", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 5, positionMode == "訊號自動追蹤" ? "自動：" + autoSide : positionMode, text_color=color.white, bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 0, 6, "即時提醒", text_color=color.rgb(190, 195, 205), bgcolor=color.rgb(20, 24, 32))
+    table.cell(statusTable, 1, 6, "盤中狀態可能在收線前改變", text_color=color.white, bgcolor=color.rgb(20, 24, 32))
 
-alertcondition(state == "ENTER" and side == "LONG", "Flash Point LONG ENTER", "Flash Point LONG ENTER")
-alertcondition(state == "ENTER" and side == "SHORT", "Flash Point SHORT ENTER", "Flash Point SHORT ENTER")
-alertcondition(state == "TRIM", "Flash Point TRIM", "Flash Point TRIM")
-alertcondition(state == "EXIT", "Flash Point EXIT", "Flash Point EXIT")
+alertcondition(state == "進場" and side == "多單", "Flash Point 多單進場", "Flash Point 多單進場")
+alertcondition(state == "進場" and side == "空單", "Flash Point 空單進場", "Flash Point 空單進場")
+alertcondition(state == "減倉", "Flash Point 減倉", "Flash Point 減倉")
+alertcondition(state == "出場", "Flash Point 出場", "Flash Point 出場")

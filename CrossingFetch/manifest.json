@@ -30,7 +30,6 @@
       ],
       "js": [
         "core.js",
-        "live-signal.js",
         "content.js"
       ],
       "css": [

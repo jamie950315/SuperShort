@@ -3,7 +3,6 @@
   window.__crossingFetchContent = true;
 
   const Core = window.CrossingFetchCore;
-  const LiveSignal = window.CrossingFetchLiveSignal;
   const DB_NAME = "CrossingFetchDB";
   const DB_VERSION = 1;
   const STORE = "samples";
@@ -41,8 +40,6 @@
   let lastBodyFlashScanAt = 0;
   let lastBodyFlash = null;
   let cachedMarketGuess = null;
-  let liveSignalTracker = LiveSignal?.createLiveSignalTracker?.() || null;
-  let latestLiveSignal = null;
 
   createPanel();
   startFlashRefreshLoop();
@@ -107,7 +104,6 @@
         <button type="button" class="secondary" id="cf-clear">Clear Session</button>
         <button type="button" class="secondary" id="cf-clear-all">Clear All</button>
       </div>
-      <div class="cf-live-signal" id="cf-live-signal">Live signal: waiting for Flash Point.</div>
       <div class="cf-status" id="cf-status">Ready.</div>
     `;
     document.documentElement.appendChild(panel);
@@ -178,9 +174,7 @@
   function makeSample(mode, reason) {
     const flash = readFlashPointValues();
     const crossing = Core.detectCrossing(previousFlash, flash);
-    latestLiveSignal = updateLiveSignal({ market: guessMarket(), flash, crossing });
     previousFlash = flash;
-    const market = guessMarket();
 
     return {
       schema: "crossing-fetch.sample.v1",
@@ -192,7 +186,7 @@
         url: location.href,
         title: document.title
       },
-      market,
+      market: guessMarket(),
       bar: latestBar,
       barSeries: latestBarSeries,
       instantBar: latestSocketSnapshot?.bar || null,
@@ -256,7 +250,6 @@
     if (socketKey === lastSocketAlignedKey) return;
     lastSocketAlignedKey = socketKey;
     const crossing = Core.detectCrossing(previousInstantFlash, flash);
-    latestLiveSignal = updateLiveSignal({ market: guessMarket(), flash, crossing });
     previousInstantFlash = flash;
     saveSample({
       schema: "crossing-fetch.sample.v1",
@@ -350,7 +343,6 @@
     const previousKey = latestFlash ? `${latestFlash.c1}:${latestFlash.c2}:${latestFlash.source}` : "";
     const nextKey = `${next.c1}:${next.c2}:${next.source}`;
     latestFlash = next;
-    latestLiveSignal = updateLiveSignal({ market: guessMarket(), flash: next, crossing: "none" });
     if (previousKey !== nextKey) updateStatus();
   }
 
@@ -496,8 +488,6 @@
       latestIndicatorSeries = [];
       latestIndicatorSeriesByPath.clear();
       latestSocketSnapshot = null;
-      liveSignalTracker?.reset?.();
-      latestLiveSignal = null;
       await runExclusiveDbTask(() => deleteSession(sessionToDelete));
       updateStatus("Current session cleared.");
     } catch (error) {
@@ -514,8 +504,6 @@
       previousFlash = null;
       previousInstantFlash = null;
       resetSessionDedupeState();
-      liveSignalTracker?.reset?.();
-      latestLiveSignal = null;
       await runExclusiveDbTask(async () => {
         const db = await openDb();
         await new Promise((resolve, reject) => {
@@ -544,7 +532,6 @@
   function updateStatus(extra) {
     const status = document.querySelector("#cf-status");
     if (!status) return;
-    renderLiveSignalStatus();
     const flashText = latestFlash?.readable
       ? `C1 ${formatNumber(latestFlash.c1)} / C2 ${formatNumber(latestFlash.c2)} (${latestFlash.source || "unknown"})`
       : "Flash values not readable yet";
@@ -561,30 +548,6 @@
 
   function showError(error) {
     updateStatus(`Error: ${error?.message || error}`);
-  }
-
-  function updateLiveSignal(input) {
-    if (!liveSignalTracker) return null;
-    return liveSignalTracker.update(input);
-  }
-
-  function renderLiveSignalStatus() {
-    const container = document.querySelector("#cf-live-signal");
-    if (!container) return;
-    if (!latestLiveSignal) {
-      container.textContent = "Live signal: waiting for Flash Point.";
-      container.className = "cf-live-signal";
-      return;
-    }
-    const stateClass = String(latestLiveSignal.state || "WAIT").toLowerCase();
-    container.className = `cf-live-signal cf-live-signal-${stateClass}`;
-    const target = latestLiveSignal.supported
-      ? `Target: ${latestLiveSignal.symbol} profile active`
-      : `Target: ${latestLiveSignal.symbol} unsupported`;
-    container.innerHTML = [
-      `<div class="cf-live-target">${escapeHtml(target)}</div>`,
-      `<div class="cf-live-text">${escapeHtml(latestLiveSignal.text)}</div>`
-    ].join("");
   }
 
   function guessSymbol() {

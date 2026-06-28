@@ -135,24 +135,3 @@ test("manifest injects WebSocket mirror in the main world at document_start", ()
 
   assert.ok(mainWorldScript, "injected.js must run in MAIN world before TradingView creates WebSockets");
 });
-
-test("manifest loads live signal module before content script", () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
-  const contentEntry = manifest.content_scripts.find((entry) => {
-    return Array.isArray(entry.js) && entry.js.includes("content.js");
-  });
-
-  assert.ok(contentEntry, "content.js entry must exist");
-  const liveSignalIndex = contentEntry.js.indexOf("live-signal.js");
-  const contentIndex = contentEntry.js.indexOf("content.js");
-  assert.ok(liveSignalIndex !== -1, "live-signal.js must be loaded");
-  assert.ok(liveSignalIndex < contentIndex, "live-signal.js must load before content.js");
-});
-
-test("content script renders live TradingView signal status", () => {
-  const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
-  assert.match(content, /const LiveSignal = window\.CrossingFetchLiveSignal/);
-  assert.match(content, /liveSignalTracker = LiveSignal\?\.createLiveSignalTracker\?\.\(\) \|\| null/);
-  assert.match(content, /id="cf-live-signal"/);
-  assert.match(content, /renderLiveSignalStatus/);
-});

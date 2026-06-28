@@ -27,6 +27,7 @@ CrossingFetch/analysis/backtest-data/
 
 # Local tool state
 .superpowers/
+.worktrees/
 
 # OS/editor files
 .DS_Store

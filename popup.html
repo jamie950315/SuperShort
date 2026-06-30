@@ -45,12 +45,12 @@
   <label>平倉 GTX 重試次數</label>
   <input id="exitChaseRetries" type="number" min="0" max="5" step="1" />
   <div class="row"><input id="autoSettlementEnabled" type="checkbox" /><span>自動結算：開倉掛單成交後自動送反向 reduce-only 限價單</span></div>
-  <label>自動結算收益率 %（槓桿後，0.01–100）</label>
-  <input id="autoSettlementRoiPct" type="number" min="0.01" max="100" step="0.01" />
+  <label>自動結算收益率 %（槓桿後，0.001–100）</label>
+  <input id="autoSettlementRoiPct" type="number" min="0.001" max="100" step="0.001" />
   <div class="row"><input id="profitOnlySettlementEnabled" type="checkbox" /><span>Profit-only settlement：自動平倉只允許預期獲利價格</span></div>
   <div class="row"><input id="slOrderEnabled" type="checkbox" /><span>SL order：開倉成交後送條件 GTX reduce-only 止損單</span></div>
-  <label>SL order %（槓桿後，0.01–100）</label>
-  <input id="slOrderRoiPct" type="number" min="0.01" max="100" step="0.01" />
+  <label>SL order %（槓桿後，0.001–100）</label>
+  <input id="slOrderRoiPct" type="number" min="0.001" max="100" step="0.001" />
   <div class="row"><input id="dryRun" type="checkbox" /><span>Dry run：只預覽，不送單</span></div>
   <div class="row"><input id="autoReduceOnly" type="checkbox" /><span>反向按鈕自動 reduce-only（單向持倉模式）</span></div>
   <div class="row"><input id="replaceReduceOnly" type="checkbox" /><span>平倉時替換舊 exit 單（取消同方向舊 reduce-only 單）</span></div>

@@ -20,7 +20,7 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.5";
+const EXTENSION_VERSION = "0.4.6";
 const EXCHANGE_INFO_CACHE = new Map();
 const POSITION_CACHE = new Map();
 const POSITION_CACHE_TTL_MS = 30000;
@@ -202,7 +202,7 @@ function clampLeverage(value) {
 function normalizeRoiPct(value) {
   const n = Number(value);
   const safe = Number.isFinite(n) ? n : Number(DEFAULTS.autoSettlementRoiPct);
-  return String(Math.min(100, Math.max(0.01, safe)));
+  return String(Math.min(100, Math.max(0.001, safe)));
 }
 
 function shouldResetPendingSettlementsOnInstall(previousVersion, currentVersion) {
@@ -728,6 +728,7 @@ function buildAutoSettlementPreview({ config, symbol, book, filters }) {
 function buildAutoSettlementPlan({ symbol, entrySide, entryPrice, quantity, originalAmount, leverage, roiPct, filters, makerTicks }) {
   const entry = Number(entryPrice);
   const qty = Number(quantity);
+  const original = Number(originalAmount);
   const lev = clampLeverage(leverage);
   const roi = Number(normalizeRoiPct(roiPct));
   const underlyingMove = roi / 100 / lev;
@@ -741,6 +742,7 @@ function buildAutoSettlementPlan({ symbol, entrySide, entryPrice, quantity, orig
     : floorToStep(rawTarget, filters.tickSize);
   const expectedProfitByInput = Number(originalAmount) * roi / 100;
   const expectedProfitByPrice = Math.abs(Number(settlementPrice) - entry) * qty;
+  const actualRoiPct = original > 0 ? (expectedProfitByPrice / original) * 100 : 0;
   return {
     enabled: true,
     settlementEnabled: true,
@@ -750,12 +752,13 @@ function buildAutoSettlementPlan({ symbol, entrySide, entryPrice, quantity, orig
     entryPrice: String(entryPrice),
     settlementPrice,
     quantity: String(quantity),
-    originalAmount: Number(originalAmount),
+    originalAmount: original,
     leverage: lev,
     roiPct: roi,
     underlyingMovePct: underlyingMove * 100,
     expectedProfit: expectedProfitByInput.toFixed(4),
     expectedProfitByPrice: expectedProfitByPrice.toFixed(4),
+    actualRoiPct: actualRoiPct.toFixed(4),
     makerTicks
   };
 }
@@ -2417,17 +2420,21 @@ function decimalsFromStep(step) {
 }
 
 function floorToStep(value, step) {
-  const n = Number(step);
   const d = decimalsFromStep(step);
-  const floored = Math.floor((Number(value) + Number.EPSILON) / n) * n;
-  return floored.toFixed(d);
+  const scale = 10 ** d;
+  const stepUnits = Math.round(Number(step) * scale);
+  const scaled = Number(value) * scale / stepUnits;
+  const flooredUnits = Math.floor(scaled + 1e-9) * stepUnits;
+  return (flooredUnits / scale).toFixed(d);
 }
 
 function ceilToStep(value, step) {
-  const n = Number(step);
   const d = decimalsFromStep(step);
-  const ceiled = Math.ceil((Number(value) - Number.EPSILON) / n) * n;
-  return ceiled.toFixed(d);
+  const scale = 10 ** d;
+  const stepUnits = Math.round(Number(step) * scale);
+  const scaled = Number(value) * scale / stepUnits;
+  const ceiledUnits = Math.ceil(scaled - 1e-9) * stepUnits;
+  return (ceiledUnits / scale).toFixed(d);
 }
 
 function makeClientOrderId(side) {

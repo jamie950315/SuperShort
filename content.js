@@ -137,13 +137,13 @@
       <span>Profit only settlement</span>
     </div>
     <label>自動結算收益率 %（槓桿後）</label>
-    <input id="bmw-auto-roi" type="number" min="0.01" max="100" step="0.01" />
+    <input id="bmw-auto-roi" type="number" min="0.001" max="100" step="0.001" />
     <div class="bmw-small">
       <input id="bmw-sl-order" type="checkbox" />
       <span>SL order</span>
     </div>
     <label>SL order %（槓桿後）</label>
-    <input id="bmw-sl-roi" type="number" min="0.01" max="100" step="0.01" />
+    <input id="bmw-sl-roi" type="number" min="0.001" max="100" step="0.001" />
     <div class="bmw-auto-preview" id="bmw-auto-preview">Auto settle off</div>
     <div class="bmw-ws-status" id="bmw-ws-status">WS: --</div>
     <div class="bmw-small">
@@ -316,7 +316,7 @@
         `positionAmt=${o.detectedPositionAmt}`
       ];
       if (o.autoSettlement?.enabled) {
-        lines.push(`autoSettle ${o.autoSettlement.exitSide} @ ${o.autoSettlement.settlementPrice}, expectedProfit=${o.autoSettlement.expectedProfit}`);
+        lines.push(`autoSettle ${o.autoSettlement.exitSide} @ ${o.autoSettlement.settlementPrice}, expectedProfit=${o.autoSettlement.expectedProfit}, actualRoi=${o.autoSettlement.actualRoiPct}%`);
       }
       if (o.slOrder?.enabled) {
         lines.push(`SL ${o.slOrder.exitSide} stop ${o.slOrder.triggerPrice} → ${o.slOrder.slPrice}, expectedLoss=${o.slOrder.expectedLoss}`);
@@ -479,7 +479,9 @@
     const longPrice = preview.long?.settlementPrice || "--";
     const shortPrice = preview.short?.settlementPrice || "--";
     const profit = preview.expectedProfit || "--";
-    autoPreview.textContent = `自動結算 ${preview.roiPct}%｜預期收益 ≈ ${profit}｜Long→Sell ${longPrice}｜Short→Buy ${shortPrice}`;
+    const longRoi = preview.long?.actualRoiPct || "--";
+    const shortRoi = preview.short?.actualRoiPct || "--";
+    autoPreview.textContent = `自動結算 ${preview.roiPct}%｜預期收益 ≈ ${profit}｜Long→Sell ${longPrice} (${longRoi}%)｜Short→Buy ${shortPrice} (${shortRoi}%)`;
   }
 
   function updateUserStreamStatus(userStream) {

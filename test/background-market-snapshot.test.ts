@@ -930,6 +930,93 @@ test("SL order preview uses leveraged ROI and midpoint trigger", async () => {
   assert.equal(slOrder.roiPct, 10);
 });
 
+test("auto settlement preview accepts 0.001% ROI and reports tick-rounded actual ROI", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "100",
+    leverage: 100,
+    offsetTicks: 0,
+    autoSettlementEnabled: true,
+    autoSettlementRoiPct: "0.001",
+    slOrderEnabled: false,
+    dryRun: true,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "SOLUSDC",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.0001" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "66.5798", askPrice: "66.5800" }) };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{ symbol: "SOLUSDC", positionSide: "BOTH", positionAmt: "0", leverage: "100" }]
+        };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "BUY",
+      symbol: "SOLUSDC",
+      quoteAmount: "100",
+      leverage: 100,
+      offsetTicks: 0,
+      autoSettlementEnabled: true,
+      autoSettlementRoiPct: "0.001",
+      dryRun: true
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  assert.equal(response.ok, true, response.error);
+  const order = response.result?.order as Record<string, unknown>;
+  const autoSettlement = order.autoSettlement as Record<string, unknown>;
+  assert.equal(autoSettlement.roiPct, 0.001);
+  assert.equal(autoSettlement.settlementPrice, "66.5800");
+  assert.equal(autoSettlement.actualRoiPct, "0.0150");
+});
+
 test("SL-only pending entry places a Binance conditional STOP GTX reduce-only order from average position", async () => {
   const pending = {
     id: "ps_sl_1",

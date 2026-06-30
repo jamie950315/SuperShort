@@ -16,7 +16,7 @@ The dashboard/backend is a companion paper-trading and monitoring system. It use
 
 ## Browser Extension
 
-Current extension version: `0.4.5`.
+Current extension version: `0.4.6`.
 
 The dashboard package version in `package.json` is separate from the browser extension version in `manifest.json`.
 

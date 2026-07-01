@@ -53,6 +53,16 @@ test("content panel does not overwrite websocket status when ticker omits user s
   assert.match(content, /updateUserStreamStatus\(data\.userStreamStatus\)/);
 });
 
+test("content panel displays leverage cap as original quote amount", () => {
+  const content = readFileSync("content.js", "utf8");
+  const updateMarketUi = extractFunction(content, "updateMarketUi");
+
+  assert.match(content, /id="bmw-leverage-limit"/);
+  assert.match(updateMarketUi, /updateLeverageLimit\(data\.leverageLimit\)/);
+  assert.match(content, /maxOriginalQuote/);
+  assert.doesNotMatch(content, /maxNotional\}\s*US/);
+});
+
 test("content symbol parser preserves USDC quote symbols", () => {
   const content = readFileSync("content.js", "utf8");
   assert.match(content, /const SYMBOL_QUOTES = \["FDUSD", "USDC", "USDT", "BUSD", "USD"\]/);

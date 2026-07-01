@@ -124,6 +124,7 @@
     <input id="bmw-amount" type="number" min="0" step="1" />
     <label>Leverage</label>
     <input id="bmw-leverage" type="number" min="1" max="125" step="1" />
+    <div class="bmw-leverage-limit" id="bmw-leverage-limit">可開本金上限 --</div>
     <label>Maker offset ticks</label>
     <input id="bmw-offset" type="number" min="0" step="1" />
     <label>平倉 GTX 重試次數</label>
@@ -181,6 +182,7 @@
   const symbol = $("#bmw-symbol");
   const amount = $("#bmw-amount");
   const leverage = $("#bmw-leverage");
+  const leverageLimit = $("#bmw-leverage-limit");
   const offset = $("#bmw-offset");
   const exitChase = $("#bmw-exit-chase");
   const autoSettle = $("#bmw-auto-settle");
@@ -459,6 +461,9 @@
     if ("userStreamStatus" in (data || {})) {
       updateUserStreamStatus(data.userStreamStatus);
     }
+    if ("leverageLimit" in (data || {})) {
+      updateLeverageLimit(data.leverageLimit);
+    }
   }
 
   function updateCurrentPriceUi(data) {
@@ -503,6 +508,19 @@
     wsStatus.textContent = `WS: ${statusText || "fallback REST"}${reason}`;
     wsStatus.classList.remove("connected", "dry");
     wsStatus.classList.add("fallback");
+  }
+
+  function updateLeverageLimit(limit) {
+    const maxOriginalQuote = Number(limit?.maxOriginalQuote);
+    const limitLeverage = Number(limit?.leverage);
+    const quote = getQuoteAsset(symbol.value) || "USDT/USDC";
+    if (Number.isFinite(maxOriginalQuote) && maxOriginalQuote > 0) {
+      leverageLimit.textContent = `可開本金上限 ${formatMoney(maxOriginalQuote)} ${quote}${Number.isFinite(limitLeverage) && limitLeverage > 0 ? ` @ ${limitLeverage}x` : ""}`;
+      leverageLimit.title = "以未乘槓桿的原始本金顯示";
+      return;
+    }
+    leverageLimit.textContent = "可開本金上限 --";
+    leverageLimit.title = limit?.error ? "目前無法取得槓桿級距" : "";
   }
 
   function resetPositionUi() {
@@ -704,6 +722,14 @@
       if (s.endsWith(quote) && s.length > quote.length) return s;
     }
     return null;
+  }
+
+  function getQuoteAsset(value) {
+    const s = normalizeSymbolInput(value);
+    for (const quote of SYMBOL_QUOTES) {
+      if (s.endsWith(quote) && s.length > quote.length) return quote;
+    }
+    return "";
   }
 
   function normalizeSymbolInput(value) {

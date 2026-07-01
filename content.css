@@ -25,6 +25,7 @@
 #bmw-panel .bmw-title button { background: transparent; border: 0; color: #aaa; cursor: pointer; font-size: 16px; }
 #bmw-panel label { display: block; font-size: 11px; color: #a7b1bc; margin-top: 7px; }
 #bmw-panel input { width: 100%; margin-top: 4px; padding: 7px 8px; border-radius: 7px; border: 1px solid #394150; background: #0b0f16; color: #eaecef; }
+#bmw-panel .bmw-leverage-limit { margin-top: 5px; padding: 5px 7px; border-radius: 7px; background: #0b0f16; color: #f0b90b; font-size: 10px; line-height: 1.25; }
 #bmw-panel .bmw-market { margin-top: 10px; padding: 8px; border-radius: 8px; background: #0b0f16; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #a7b1bc; }
 #bmw-panel .bmw-auto-preview { margin-top: 8px; padding: 7px 8px; border-radius: 8px; background: #0b0f16; color: #cfd6df; font-size: 10px; line-height: 1.35; }
 #bmw-panel .bmw-ws-status { margin-top: 6px; padding: 6px 8px; border-radius: 7px; background: #0b0f16; color: #a7b1bc; font-size: 10px; line-height: 1.25; }

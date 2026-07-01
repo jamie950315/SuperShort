@@ -331,6 +331,85 @@ test("trading snapshot stops local REST calls while Binance IP ban is active", a
   assert.equal(fetchCalls, callsAfterBan);
 });
 
+test("trading snapshot exposes leverage max original quote without leverage multiplication", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    leverage: 20,
+    recvWindow: 5000
+  };
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{ symbol: "BTCUSDT", positionSide: "BOTH", positionAmt: "0", leverage: "20" }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "99.8", askPrice: "100.1" }) };
+      }
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/leverageBracket") {
+        assert.equal(parsed.searchParams.get("symbol"), "BTCUSDT");
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            brackets: [{ bracket: 1, initialLeverage: 20, notionalFloor: "0", notionalCap: "50000" }]
+          }]
+        };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result: Record<string, unknown> }>((resolve) => {
+    apiListeners[0]({ type: "GET_TRADING_SNAPSHOT", symbol: "BTCUSDT" }, {}, (res) => {
+      resolve(res as { ok: boolean; result: Record<string, unknown> });
+    });
+  });
+
+  assert.equal(response.ok, true);
+  const limit = response.result.leverageLimit as Record<string, unknown>;
+  assert.equal(limit.leverage, 20);
+  assert.equal(limit.maxNotional, 50000);
+  assert.equal(limit.maxOriginalQuote, 2500);
+});
+
 test("market stream watchdog closes stale connected sockets", async () => {
   let now = 1000;
   let watchdog: (() => void) | null = null;

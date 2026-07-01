@@ -20,7 +20,7 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.7";
+const EXTENSION_VERSION = "0.4.8";
 const EXCHANGE_INFO_CACHE = new Map();
 const LEVERAGE_BRACKET_CACHE = new Map();
 const POSITION_CACHE = new Map();
@@ -2414,6 +2414,8 @@ async function getTradingSnapshot({ symbol }) {
     : Number.isFinite(mark) && mark > 0 ? mark : mid;
   position = addLivePositionPnl(position, { currentPrice });
 
+  const leverageLimit = await buildLeverageLimitSnapshot(config, symbol, position);
+
   let autoSettlementPreview = null;
   try {
     if (book) {
@@ -2433,9 +2435,32 @@ async function getTradingSnapshot({ symbol }) {
     priceAgeMs: marketSnapshot.ageMs,
     marketStreamStatus: getMarketStreamStatus(),
     position,
+    leverageLimit,
     autoSettlementPreview,
     userStreamStatus: getUserStreamStatus()
   };
+}
+
+async function buildLeverageLimitSnapshot(config, symbol, position) {
+  const leverage = Number(position?.leverage || config.leverage || 0);
+  if (!config.apiKey || !config.apiSecret || !Number.isFinite(leverage) || leverage <= 0) {
+    return { leverage: Number.isFinite(leverage) && leverage > 0 ? leverage : null, maxNotional: null, maxOriginalQuote: null, error: "unavailable" };
+  }
+  try {
+    const maxNotional = await getMaxNotionalForLeverage(config, symbol, leverage);
+    return {
+      leverage,
+      maxNotional,
+      maxOriginalQuote: roundFinancial(maxNotional / leverage)
+    };
+  } catch (err) {
+    return {
+      leverage,
+      maxNotional: null,
+      maxOriginalQuote: null,
+      error: err?.message || String(err)
+    };
+  }
 }
 
 async function getFastPosition(config, symbol) {

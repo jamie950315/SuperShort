@@ -20,10 +20,12 @@ const DEFAULTS = {
   pendingSettlementFillIndex: {}
 };
 
-const EXTENSION_VERSION = "0.4.6";
+const EXTENSION_VERSION = "0.4.7";
 const EXCHANGE_INFO_CACHE = new Map();
+const LEVERAGE_BRACKET_CACHE = new Map();
 const POSITION_CACHE = new Map();
 const POSITION_CACHE_TTL_MS = 30000;
+const LEVERAGE_BRACKET_CACHE_TTL_MS = 10 * 60 * 1000;
 const REST_BAN_STATE = {
   until: 0,
   message: ""
@@ -258,6 +260,7 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
   const effectiveProfitOnlySettlementEnabled = profitOnlySettlementEnabled === undefined
     ? Boolean(config.profitOnlySettlementEnabled)
     : Boolean(profitOnlySettlementEnabled);
+  const effectiveDryRun = dryRun === undefined ? config.dryRun : Boolean(dryRun);
 
   // Start a live open-orders reconciliation early when the short-lived position cache
   // says this click is likely an exit. If the cache is unavailable or wrong, we will
@@ -265,7 +268,7 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
   const cachedPositionResult = readPositionCache(config, symbol);
   const likelyReduceOnlyExit = effectiveAutoReduceOnly && effectiveReplaceReduceOnly &&
     cachedPositionResult && wouldReducePosition(side, cachedPositionResult.position);
-  const liveReplacementIdsPromise = likelyReduceOnlyExit
+  const liveReplacementIdsPromise = !effectiveDryRun && likelyReduceOnlyExit
     ? getLiveReplaceableExitOrderIdsSafe(config, symbol, side)
     : null;
 
@@ -351,7 +354,9 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
     : { enabled: false, reason: reduceOnly ? "reduce-only exit" : "disabled" };
 
   const replacementInfo = reduceOnly && effectiveReplaceReduceOnly
-    ? await getExitReplacementOrderIds(config, symbol, side, liveReplacementIdsPromise)
+    ? (effectiveDryRun
+        ? await getIndexedExitReplacementInfo(symbol, side)
+        : await getExitReplacementOrderIds(config, symbol, side, liveReplacementIdsPromise))
     : { ids: [], indexedIds: [], liveIds: [], source: "none" };
   const replacementClientOrderIds = replacementInfo.ids;
 
@@ -408,8 +413,19 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
   preview.profitOnlySettlementAdjusted = protectedInitialPrice.adjusted;
   preview.profitOnlySettlementAveragePrice = protectedInitialPrice.averagePrice;
 
-  const effectiveDryRun = dryRun === undefined ? config.dryRun : Boolean(dryRun);
   if (effectiveDryRun) return { dryRun: true, order: preview };
+
+  if (!reduceOnly) {
+    await assertWithinLeverageBracket({
+      config,
+      symbol,
+      side,
+      quantity,
+      price: protectedInitialPrice.price,
+      leverage,
+      position
+    });
+  }
 
   // Leverage only matters for opening / adding exposure. For full reduce-only exits,
   // changing leverage first adds an avoidable signed REST round trip and can slow exits.
@@ -467,7 +483,10 @@ async function placeMakerOrder({ side, symbol, quoteAmount, leverage, offsetTick
       maxRetries: reduceOnly ? 0 : ENTRY_MAKER_RETRY_LIMIT,
       profitOnlySettlement: reduceOnly
         ? { enabled: effectiveProfitOnlySettlementEnabled, position }
-        : { enabled: false, position: null }
+        : { enabled: false, position: null },
+      bracketGuard: reduceOnly
+        ? null
+        : { config, symbol, side, quantity, leverage, position }
     });
     response = entryResult.response;
     finalClientOrderId = entryResult.order.newClientOrderId;
@@ -658,7 +677,7 @@ async function placeReduceOnlyOrderWithChase({ config, symbol, side, quantity, f
   throw lastError || new Error("Exit chase failed");
 }
 
-async function placeEntryOrderWithMakerRetry({ config, symbol, side, quantity, filters, makerTicks, initialBook, baseOrder, maxRetries, profitOnlySettlement }) {
+async function placeEntryOrderWithMakerRetry({ config, symbol, side, quantity, filters, makerTicks, initialBook, baseOrder, maxRetries, profitOnlySettlement, bracketGuard }) {
   let lastError = null;
   let currentBook = initialBook;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -680,6 +699,9 @@ async function placeEntryOrderWithMakerRetry({ config, symbol, side, quantity, f
       newClientOrderId: attempt === 0 ? baseOrder.newClientOrderId : makeClientOrderId(side)
     };
     try {
+      if (attempt > 0 && bracketGuard) {
+        await assertWithinLeverageBracket({ ...bracketGuard, price: protectedPrice.price });
+      }
       const response = await signedRequest(config, "POST", "/fapi/v1/order", nextOrder);
       return {
         response,
@@ -2083,6 +2105,16 @@ async function getExitReplacementOrderIds(config, symbol, side, liveReplacementI
   };
 }
 
+async function getIndexedExitReplacementInfo(symbol, side) {
+  const indexedIds = uniqueStrings(await getIndexedExitOrderIds(symbol, side));
+  return {
+    ids: indexedIds,
+    indexedIds,
+    liveIds: [],
+    source: "indexed(dry-run)"
+  };
+}
+
 function wouldReducePosition(side, position) {
   const amt = Number(position?.positionAmt || 0);
   return (side === "BUY" && amt < 0) || (side === "SELL" && amt > 0);
@@ -2144,8 +2176,18 @@ async function cancelIndexedExitOrders(config, symbol, clientOrderIds) {
   if (!uniqueIds.length) return [];
 
   const results = [];
-  for (let i = 0; i < uniqueIds.length; i += 10) {
-    const chunk = uniqueIds.slice(i, i + 10);
+  const orderIds = uniqueIds.filter(id => !isSlAlgoClientId(id));
+  const algoIds = uniqueIds.filter(isSlAlgoClientId);
+
+  if (algoIds.length) {
+    const settled = await Promise.allSettled(
+      algoIds.map(clientAlgoId => cancelAlgoOrderByClientAlgoId(config, clientAlgoId))
+    );
+    results.push(...settled.map((result, j) => normalizeCancelResult(result, algoIds[j], false)));
+  }
+
+  for (let i = 0; i < orderIds.length; i += 10) {
+    const chunk = orderIds.slice(i, i + 10);
     if (chunk.length > 1) {
       try {
         const batchResults = await batchCancelOpenOrdersByClientIds(config, symbol, chunk);
@@ -2162,6 +2204,10 @@ async function cancelIndexedExitOrders(config, symbol, clientOrderIds) {
     results.push(...settled.map((result, j) => normalizeCancelResult(result, chunk[j], false)));
   }
   return results;
+}
+
+function isSlAlgoClientId(id) {
+  return String(id || "").startsWith("mb_sl_");
 }
 
 async function batchCancelOpenOrdersByClientIds(config, symbol, clientOrderIds) {
@@ -2199,12 +2245,133 @@ async function cancelOpenOrderByClientId(config, symbol, origClientOrderId) {
   });
 }
 
+async function cancelAlgoOrderByClientAlgoId(config, clientAlgoId) {
+  return signedRequest(config, "DELETE", "/fapi/v1/algoOrder", {
+    clientAlgoId,
+    recvWindow: config.recvWindow
+  });
+}
+
 async function changeInitialLeverage(config, symbol, leverage) {
   return signedRequest(config, "POST", "/fapi/v1/leverage", {
     symbol,
     leverage,
     recvWindow: config.recvWindow
   });
+}
+
+async function assertWithinLeverageBracket({ config, symbol, side, quantity, price, leverage, position }) {
+  const projected = calculateProjectedPositionNotional({ side, quantity, price, position });
+  if (!projected.increasesExposure) return;
+
+  const [maxNotional, outstandingOpeningNotional] = await Promise.all([
+    getMaxNotionalForLeverage(config, symbol, leverage),
+    getOutstandingOpeningOrderNotional(config, symbol, side)
+  ]);
+  const totalProjectedNotional = projected.projectedNotional + outstandingOpeningNotional;
+  if (!Number.isFinite(totalProjectedNotional) || totalProjectedNotional <= maxNotional + 1e-8) return;
+
+  throw new Error(
+    `Exceeded the maximum allowable position at current leverage. ` +
+    `projectedNotional=${totalProjectedNotional.toFixed(4)}, ` +
+    `maxNotional=${maxNotional.toFixed(4)}, ` +
+    `orderNotional=${projected.orderNotional.toFixed(4)}, ` +
+    `openOrderNotional=${outstandingOpeningNotional.toFixed(4)}, ` +
+    `currentPositionNotional=${projected.currentPositionNotional.toFixed(4)}. ` +
+    `Reduce quote amount or leverage.`
+  );
+}
+
+async function getMaxNotionalForLeverage(config, symbol, leverage) {
+  const lev = Number(leverage);
+  const cacheKey = `${config.baseUrl}:${config.apiKey || ""}:${symbol}:${lev}`;
+  const now = Date.now();
+  const cached = LEVERAGE_BRACKET_CACHE.get(cacheKey);
+  if (cached) {
+    if (now - cached.ts < LEVERAGE_BRACKET_CACHE_TTL_MS) return cached.maxNotional;
+    LEVERAGE_BRACKET_CACHE.delete(cacheKey);
+  }
+
+  try {
+    const data = await signedRequest(config, "GET", "/fapi/v1/leverageBracket", {
+      symbol,
+      recvWindow: config.recvWindow
+    });
+    const item = Array.isArray(data) ? data.find(entry => entry?.symbol === symbol) : data;
+    if (!item || item.symbol !== symbol) {
+      throw new Error(`Leverage bracket for ${symbol} not found`);
+    }
+    const brackets = Array.isArray(item?.brackets) ? item.brackets : [];
+    const caps = brackets
+      .filter(bracket => Number(bracket.initialLeverage) >= lev)
+      .map(bracket => Number(bracket.notionalCap))
+      .filter(cap => Number.isFinite(cap) && cap > 0);
+    if (!caps.length) throw new Error(`No leverage bracket cap for ${symbol} at ${lev}x`);
+    const maxNotional = Math.max(...caps);
+    LEVERAGE_BRACKET_CACHE.set(cacheKey, { ts: Date.now(), maxNotional });
+    return maxNotional;
+  } catch (err) {
+    throw new Error(`Cannot verify leverage bracket for ${symbol}: ${err?.message || err}`);
+  }
+}
+
+function calculateProjectedPositionNotional({ side, quantity, price, position }) {
+  const orderQty = Number(quantity);
+  const orderPrice = Number(price);
+  const positionQty = Number(position?.positionAmt || 0);
+  const signedOrderQty = side === "BUY" ? orderQty : -orderQty;
+  const projectedQty = positionQty + signedOrderQty;
+  const orderNotional = Math.abs(orderQty * orderPrice);
+  const currentPositionNotional = Number.isFinite(Number(position?.notional)) && Number(position.notional) !== 0
+    ? Math.abs(Number(position.notional))
+    : Math.abs(positionQty * orderPrice);
+  const currentAbsQty = Math.abs(positionQty);
+  const projectedAbsQty = Math.abs(projectedQty);
+  const sameDirectionAdd = positionQty === 0 || Math.sign(positionQty) === Math.sign(signedOrderQty);
+  const openingQty = sameDirectionAdd
+    ? orderQty
+    : Math.max(0, Math.abs(signedOrderQty) - currentAbsQty);
+  const increasesExposure = sameDirectionAdd
+    ? projectedAbsQty > currentAbsQty + 1e-12
+    : openingQty > 1e-12;
+  const projectedNotional = sameDirectionAdd
+    ? currentPositionNotional + orderNotional
+    : openingQty * orderPrice;
+  return { currentPositionNotional, orderNotional, projectedNotional, projectedQty, increasesExposure };
+}
+
+async function getOutstandingOpeningOrderNotional(config, symbol, side) {
+  const orders = await signedRequest(config, "GET", "/fapi/v1/openOrders", {
+    symbol,
+    recvWindow: config.recvWindow
+  });
+  if (!Array.isArray(orders)) {
+    throw new Error(`Cannot verify open orders for ${symbol}: unexpected response`);
+  }
+  return orders
+    .filter(order => order?.symbol === symbol && order?.side === side && !isReduceOnlyOrder(order))
+    .reduce((sum, order) => {
+      const originalQty = Number(order.origQty ?? order.quantity ?? 0);
+      const executedQty = Number(order.executedQty ?? order.cumQty ?? 0);
+      if (!Number.isFinite(originalQty) || originalQty < 0 || !Number.isFinite(executedQty) || executedQty < 0) {
+        throw new Error(`Cannot verify open order quantity for ${symbol}: invalid quantity`);
+      }
+      const remainingQty = Math.max(0, originalQty - executedQty);
+      const orderPrice = getOpenOrderNotionalPrice(order);
+      if (remainingQty > 0 && (!Number.isFinite(orderPrice) || orderPrice <= 0)) {
+        throw new Error(`Cannot verify open order notional for ${symbol}: missing usable price`);
+      }
+      const notional = remainingQty * orderPrice;
+      return Number.isFinite(notional) && notional > 0 ? sum + notional : sum;
+    }, 0);
+}
+
+function getOpenOrderNotionalPrice(order) {
+  for (const key of ["price", "stopPrice", "activatePrice"]) {
+    const value = Number(order?.[key] ?? 0);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
 }
 
 async function getTradingSnapshot({ symbol }) {

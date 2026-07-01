@@ -68,6 +68,141 @@ function loadBackground(extra: Record<string, unknown> = {}) {
   return { api: sandbox.__BMW_TEST__ as Record<string, (...args: unknown[]) => unknown>, listeners };
 }
 
+async function placeMakerOrderWithBracketFixture(options: {
+  side?: "BUY" | "SELL";
+  quoteAmount?: string;
+  leverage?: number;
+  autoReduceOnly?: boolean;
+  positionAmt?: string;
+  positionNotional?: string;
+  positionLeverage?: string;
+  book?: { bidPrice: string; askPrice: string };
+  bracketResponse?: unknown;
+  bracketOk?: boolean;
+  bracketStatus?: number;
+  openOrders?: Array<Record<string, unknown>>;
+  openOrdersResponse?: unknown;
+  openOrdersOk?: boolean;
+  openOrdersStatus?: number;
+  dryRun?: boolean;
+}) {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: options.quoteAmount ?? "200",
+    leverage: options.leverage ?? 100,
+    offsetTicks: 0,
+    dryRun: options.dryRun ?? false,
+    autoReduceOnly: options.autoReduceOnly ?? true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  let orderPostCalls = 0;
+  const postedOrders: URLSearchParams[] = [];
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, fetchOptions: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => options.book ?? { bidPrice: "99.8", askPrice: "100.1" } };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            positionSide: "BOTH",
+            positionAmt: options.positionAmt ?? "0",
+            leverage: options.positionLeverage ?? String(options.leverage ?? 100),
+            notional: options.positionNotional
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/leverageBracket") {
+        assert.equal(parsed.searchParams.get("symbol"), "BTCUSDT");
+        const ok = options.bracketOk ?? true;
+        return {
+          ok,
+          status: options.bracketStatus ?? (ok ? 200 : 500),
+          json: async () => options.bracketResponse ?? [{
+            symbol: "BTCUSDT",
+            brackets: [
+              { bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "10000" },
+              { bracket: 2, initialLeverage: 50, notionalFloor: "10000", notionalCap: "50000" }
+            ]
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        assert.equal(parsed.searchParams.get("symbol"), "BTCUSDT");
+        const ok = options.openOrdersOk ?? true;
+        return {
+          ok,
+          status: options.openOrdersStatus ?? (ok ? 200 : 500),
+          json: async () => options.openOrdersResponse ?? options.openOrders ?? []
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && fetchOptions.method === "POST") {
+        orderPostCalls += 1;
+        postedOrders.push(new URLSearchParams(fetchOptions.body || ""));
+        return { ok: true, json: async () => ({ symbol: "BTCUSDT", status: "NEW" }) };
+      }
+      if (parsed.pathname === "/fapi/v1/leverage" && fetchOptions.method === "POST") {
+        return { ok: true, json: async () => ({ leverage: options.leverage ?? 100 }) };
+      }
+      throw new Error(`Unexpected fetch ${fetchOptions.method || "GET"} ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: options.side ?? "BUY",
+      symbol: "BTCUSDT",
+      quoteAmount: options.quoteAmount ?? "200",
+      leverage: options.leverage ?? 100,
+      offsetTicks: 0,
+      autoReduceOnly: options.autoReduceOnly ?? true,
+      dryRun: options.dryRun ?? false
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  return { response, orderPostCalls, postedOrders };
+}
+
 test("trading snapshot uses cached WebSocket bookTicker without REST bookTicker", async () => {
   let bookTickerCalls = 0;
   const { api, listeners } = loadBackground({
@@ -1127,6 +1262,135 @@ test("SL-only pending entry places a Binance conditional STOP GTX reduce-only or
   assert.equal(postedAlgoOrders[0].get("workingType"), "CONTRACT_PRICE");
 });
 
+test("manual reduce-only replace cancels indexed SL algo orders through algo endpoint", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "100",
+    leverage: 20,
+    offsetTicks: 0,
+    dryRun: false,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: { BTCUSDT: { SELL: ["mb_sl_sell_old", "mb_tp_sell_old"] } }
+  };
+  const canceledAlgoOrders: URLSearchParams[] = [];
+  const canceledOrders: URLSearchParams[] = [];
+  const postedOrders: URLSearchParams[] = [];
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "99.8", askPrice: "100.1" }) };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            positionSide: "BOTH",
+            positionAmt: "1",
+            entryPrice: "100.0",
+            breakEvenPrice: "100.0",
+            leverage: "20",
+            markPrice: "100.0",
+            notional: "100"
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            side: "SELL",
+            reduceOnly: "true",
+            clientOrderId: "mb_tp_sell_old"
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/algoOrder" && options.method === "DELETE") {
+        canceledAlgoOrders.push(parsed.searchParams);
+        return {
+          ok: true,
+          json: async () => ({ clientAlgoId: parsed.searchParams.get("clientAlgoId"), algoStatus: "CANCELED" })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "DELETE") {
+        canceledOrders.push(parsed.searchParams);
+        return {
+          ok: true,
+          json: async () => ({ origClientOrderId: parsed.searchParams.get("origClientOrderId"), status: "CANCELED" })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
+        const body = new URLSearchParams(options.body || "");
+        postedOrders.push(body);
+        return { ok: true, json: async () => ({ status: "NEW", clientOrderId: body.get("newClientOrderId") }) };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "SELL",
+      symbol: "BTCUSDT",
+      quoteAmount: "100",
+      leverage: 20,
+      offsetTicks: 0,
+      autoReduceOnly: true,
+      replaceReduceOnly: true,
+      dryRun: false
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal(canceledAlgoOrders.length, 1);
+  assert.equal(canceledAlgoOrders[0].get("clientAlgoId"), "mb_sl_sell_old");
+  assert.equal(canceledOrders.length, 1);
+  assert.equal(canceledOrders[0].get("origClientOrderId"), "mb_tp_sell_old");
+  assert.equal(postedOrders.length, 1);
+  const indexedIds = (storageState.exitOrderIndex as Record<string, Record<string, string[]>>).BTCUSDT.SELL;
+  assert.equal(indexedIds.length, 1);
+  assert.match(indexedIds[0], /^mb_sell_/);
+});
+
 test("entry maker order retries five times with fresh maker-safe prices after GTX rejection", async () => {
   const storageState: Record<string, unknown> = {
     apiKey: "key",
@@ -1195,6 +1459,18 @@ test("entry maker order retries five times with fresh maker-safe prices after GT
           json: async () => [{ symbol: "BTCUSDT", positionSide: "BOTH", positionAmt: "0", leverage: "20" }]
         };
       }
+      if (parsed.pathname === "/fapi/v1/leverageBracket") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            brackets: [{ bracket: 1, initialLeverage: 20, notionalFloor: "0", notionalCap: "50000" }]
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        return { ok: true, json: async () => [] };
+      }
       if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
         const body = new URLSearchParams(options.body || "");
         postedOrders.push(body);
@@ -1231,4 +1507,780 @@ test("entry maker order retries five times with fresh maker-safe prices after GT
   assert.equal(postedOrders[5].get("price"), "98.9");
   assert.equal((response.result?.order as Record<string, unknown>).price, "98.9");
   assert.equal((response.result?.order as Record<string, unknown>).entryRetryAttempts, 5);
+});
+
+test("entry order is blocked before posting when projected position exceeds leverage bracket cap", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "200",
+    leverage: 100,
+    offsetTicks: 0,
+    dryRun: false,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  let orderPostCalls = 0;
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "99.8", askPrice: "100.1" }) };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{ symbol: "BTCUSDT", positionSide: "BOTH", positionAmt: "0", leverage: "100" }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/leverageBracket") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            brackets: [
+              { bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "10000" },
+              { bracket: 2, initialLeverage: 50, notionalFloor: "10000", notionalCap: "50000" }
+            ]
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        return { ok: true, json: async () => [] };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
+        orderPostCalls += 1;
+        return { ok: true, json: async () => ({ symbol: "BTCUSDT" }) };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "BUY",
+      symbol: "BTCUSDT",
+      quoteAmount: "200",
+      leverage: 100,
+      offsetTicks: 0,
+      dryRun: false
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.match(response.error || "", /10000/);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("non-reduce-only opposite-side order that reduces exposure is not blocked by leverage bracket cap", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "SELL",
+    quoteAmount: "20",
+    leverage: 1,
+    autoReduceOnly: false,
+    positionAmt: "600",
+    positionNotional: "60000",
+    positionLeverage: "1"
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("projected bracket guard uses current position notional instead of repricing it at order price", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "200",
+    leverage: 1,
+    autoReduceOnly: false,
+    positionAmt: "99",
+    positionNotional: "9900",
+    positionLeverage: "1",
+    book: { bidPrice: "89.8", askPrice: "90.1" },
+    bracketResponse: [{
+      symbol: "BTCUSDT",
+      brackets: [{ bracket: 1, initialLeverage: 1, notionalFloor: "0", notionalCap: "10000" }]
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("entry order is blocked when leverage bracket lookup fails and no cached cap is available", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "10",
+    leverage: 20,
+    bracketOk: false,
+    bracketStatus: 500,
+    bracketResponse: { code: -1000, msg: "bracket unavailable" }
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /leverage bracket/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("entry order is blocked when leverage bracket response omits the requested symbol", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "10",
+    leverage: 20,
+    bracketResponse: [{
+      symbol: "ETHUSDT",
+      brackets: [{ bracket: 1, initialLeverage: 125, notionalFloor: "0", notionalCap: "999999" }]
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /BTCUSDT/);
+  assert.match(response.error || "", /leverage bracket/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("entry order is blocked when single leverage bracket object omits symbol", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "10",
+    leverage: 20,
+    bracketResponse: {
+      brackets: [{ bracket: 1, initialLeverage: 125, notionalFloor: "0", notionalCap: "999999" }]
+    }
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /BTCUSDT/);
+  assert.match(response.error || "", /leverage bracket/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("entry order is blocked when open orders lookup fails", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "10",
+    leverage: 20,
+    openOrdersOk: false,
+    openOrdersStatus: 500,
+    openOrdersResponse: { code: -1000, msg: "open orders unavailable" }
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /open orders unavailable/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("entry order includes existing opening maker orders in leverage bracket projection", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "NEW",
+      price: "100",
+      origQty: "90",
+      executedQty: "0",
+      reduceOnly: false,
+      clientOrderId: "mb_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("dry-run reduce-only preview does not query live open orders", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "100",
+    leverage: 20,
+    offsetTicks: 0,
+    dryRun: true,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  let openOrdersCalls = 0;
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "99.8", askPrice: "100.1" }) };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            positionSide: "BOTH",
+            positionAmt: "0.5",
+            entryPrice: "100.0",
+            breakEvenPrice: "100.0",
+            leverage: "20",
+            markPrice: "100.0",
+            notional: "50"
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        openOrdersCalls += 1;
+        return { ok: true, json: async () => [] };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }
+  });
+
+  await new Promise<{ ok: boolean }>((resolve) => {
+    apiListeners[0]({ type: "GET_TRADING_SNAPSHOT", symbol: "BTCUSDT" }, {}, (res) => resolve(res as { ok: boolean }));
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "SELL",
+      symbol: "BTCUSDT",
+      quoteAmount: "100",
+      leverage: 20,
+      offsetTicks: 0,
+      autoReduceOnly: true,
+      replaceReduceOnly: true,
+      dryRun: true
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal((response.result?.order as Record<string, unknown>).reduceOnly, true);
+  assert.equal(openOrdersCalls, 0);
+});
+
+test("expired leverage bracket cache is not used after live lookup fails", async () => {
+  let now = 1_700_000_000_000;
+  class FakeDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "10",
+    leverage: 20,
+    offsetTicks: 0,
+    dryRun: false,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  let bracketCalls = 0;
+  let orderPostCalls = 0;
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    Date: FakeDate,
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => ({ bidPrice: "99.8", askPrice: "100.1" }) };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return { ok: true, json: async () => [{ symbol: "BTCUSDT", positionSide: "BOTH", positionAmt: "0", leverage: "20" }] };
+      }
+      if (parsed.pathname === "/fapi/v1/leverageBracket") {
+        bracketCalls += 1;
+        if (bracketCalls === 1) {
+          return {
+            ok: true,
+            json: async () => [{
+              symbol: "BTCUSDT",
+              brackets: [{ bracket: 1, initialLeverage: 20, notionalFloor: "0", notionalCap: "50000" }]
+            }]
+          };
+        }
+        return { ok: false, status: 500, json: async () => ({ code: -1000, msg: "bracket unavailable" }) };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        return { ok: true, json: async () => [] };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
+        orderPostCalls += 1;
+        return { ok: true, json: async () => ({ symbol: "BTCUSDT", status: "NEW" }) };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const place = () => new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "BUY",
+      symbol: "BTCUSDT",
+      quoteAmount: "10",
+      leverage: 20,
+      offsetTicks: 0,
+      dryRun: false
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  const first = await place();
+  now += 10 * 60 * 1000 + 1;
+  const second = await place();
+
+  assert.equal(first.ok, true, first.error);
+  assert.equal(second.ok, false);
+  assert.match(second.error || "", /leverage bracket/i);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("flip order that opens the opposite side is checked against leverage bracket cap", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "SELL",
+    quoteAmount: "300",
+    leverage: 100,
+    autoReduceOnly: false,
+    positionAmt: "200",
+    positionNotional: "20000",
+    positionLeverage: "100",
+    bracketResponse: [{
+      symbol: "BTCUSDT",
+      brackets: [{ bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "9000" }]
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("flip order only counts the newly opened opposite-side remainder", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "SELL",
+    quoteAmount: "210",
+    leverage: 100,
+    autoReduceOnly: false,
+    positionAmt: "200",
+    positionNotional: "20000",
+    positionLeverage: "100",
+    bracketResponse: [{
+      symbol: "BTCUSDT",
+      brackets: [{ bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "2000" }]
+    }]
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("entry maker retry rechecks leverage bracket with the retried price", async () => {
+  const storageState: Record<string, unknown> = {
+    apiKey: "key",
+    apiSecret: "secret",
+    baseUrl: "https://fapi.binance.com",
+    quoteAmount: "100",
+    leverage: 100,
+    offsetTicks: 0,
+    dryRun: false,
+    autoReduceOnly: true,
+    replaceReduceOnly: true,
+    recvWindow: 5000,
+    exitOrderIndex: {}
+  };
+  const bookResponses = [
+    { bidPrice: "99.8", askPrice: "100.1" },
+    { bidPrice: "104.8", askPrice: "105.1" },
+    { bidPrice: "104.8", askPrice: "105.1" },
+    { bidPrice: "104.8", askPrice: "105.1" },
+    { bidPrice: "104.8", askPrice: "105.1" },
+    { bidPrice: "104.8", askPrice: "105.1" }
+  ];
+  let orderPostCalls = 0;
+  const apiListeners: Array<(msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown> = [];
+  loadBackground({
+    chrome: {
+      runtime: {
+        onInstalled: { addListener() {} },
+        onMessage: { addListener(fn: (msg: unknown, sender: unknown, sendResponse: (res: unknown) => void) => unknown) { apiListeners.push(fn); } }
+      },
+      storage: {
+        local: {
+          async get(keys: string[]) {
+            return Object.fromEntries(keys.filter((key) => key in storageState).map((key) => [key, storageState[key]]));
+          },
+          async set(values: Record<string, unknown>) {
+            Object.assign(storageState, values);
+          }
+        }
+      }
+    },
+    fetch: async (url: string, options: { method?: string; body?: string } = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/fapi/v1/exchangeInfo") {
+        return {
+          ok: true,
+          json: async () => ({
+            symbols: [{
+              symbol: "BTCUSDT",
+              filters: [
+                { filterType: "PRICE_FILTER", tickSize: "0.1" },
+                { filterType: "LOT_SIZE", stepSize: "0.001", minQty: "0.001", maxQty: "1000" },
+                { filterType: "MIN_NOTIONAL", notional: "5" }
+              ]
+            }]
+          })
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/ticker/bookTicker") {
+        return { ok: true, json: async () => bookResponses.shift() };
+      }
+      if (parsed.pathname === "/fapi/v3/positionRisk") {
+        return { ok: true, json: async () => [{ symbol: "BTCUSDT", positionSide: "BOTH", positionAmt: "0", leverage: "100" }] };
+      }
+      if (parsed.pathname === "/fapi/v1/leverageBracket") {
+        return {
+          ok: true,
+          json: async () => [{
+            symbol: "BTCUSDT",
+            brackets: [{ bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "10200" }]
+          }]
+        };
+      }
+      if (parsed.pathname === "/fapi/v1/openOrders") {
+        return { ok: true, json: async () => [] };
+      }
+      if (parsed.pathname === "/fapi/v1/order" && options.method === "POST") {
+        orderPostCalls += 1;
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ code: -5022, msg: "Due to maker only order, could not be fulfilled." })
+        };
+      }
+      throw new Error(`Unexpected fetch ${options.method || "GET"} ${url}`);
+    }
+  });
+
+  const response = await new Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }>((resolve) => {
+    apiListeners[0]({
+      type: "PLACE_MAKER_ORDER",
+      side: "SELL",
+      symbol: "BTCUSDT",
+      quoteAmount: "100",
+      leverage: 100,
+      offsetTicks: 0,
+      dryRun: false
+    }, {}, (res) => resolve(res as { ok: boolean; result?: Record<string, unknown>; error?: string }));
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("short entry includes existing sell opening maker orders in leverage bracket projection", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "SELL",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "SELL",
+      type: "LIMIT",
+      status: "NEW",
+      price: "100",
+      origQty: "90",
+      executedQty: "0",
+      reduceOnly: false,
+      clientOrderId: "mb_sell_existing"
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("partial filled opening maker order only counts remaining notional", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    bracketResponse: [{
+      symbol: "BTCUSDT",
+      brackets: [{ bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "5000" }]
+    }],
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "PARTIALLY_FILLED",
+      price: "100",
+      origQty: "90",
+      executedQty: "80",
+      reduceOnly: false,
+      clientOrderId: "mb_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("partial filled opening maker order remaining quantity counts toward cap", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    bracketResponse: [{
+      symbol: "BTCUSDT",
+      brackets: [{ bracket: 1, initialLeverage: 100, notionalFloor: "0", notionalCap: "2500" }]
+    }],
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "PARTIALLY_FILLED",
+      price: "100",
+      origQty: "90",
+      executedQty: "80",
+      reduceOnly: false,
+      clientOrderId: "mb_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("reduce-only open orders are excluded from opening exposure projection", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "NEW",
+      price: "100",
+      origQty: "90",
+      executedQty: "0",
+      reduceOnly: "true",
+      clientOrderId: "mb_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("boolean true reduce-only open orders are excluded from opening exposure projection", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "NEW",
+      price: "100",
+      origQty: "90",
+      executedQty: "0",
+      reduceOnly: true,
+      clientOrderId: "mb_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, true, response.error);
+  assert.equal(orderPostCalls, 1);
+});
+
+test("string false reduce-only open orders are counted as opening exposure", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "NEW",
+      price: "100",
+      origQty: "90",
+      executedQty: "0",
+      reduceOnly: "false",
+      clientOrderId: "mb_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /maximum allowable position/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("opening order with remaining quantity but no usable price fails closed", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "STOP",
+      status: "NEW",
+      origQty: "1",
+      executedQty: "0",
+      reduceOnly: false,
+      clientOrderId: "manual_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /open order notional/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("non-array open orders response fails closed", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: { code: -1000, msg: "unexpected shape" } as unknown as Array<Record<string, unknown>>
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /open orders/i);
+  assert.equal(orderPostCalls, 0);
+});
+
+test("opening order with invalid quantity fields fails closed", async () => {
+  const { response, orderPostCalls } = await placeMakerOrderWithBracketFixture({
+    side: "BUY",
+    quoteAmount: "20",
+    leverage: 100,
+    openOrders: [{
+      symbol: "BTCUSDT",
+      side: "BUY",
+      type: "LIMIT",
+      status: "NEW",
+      price: "100",
+      origQty: "not-a-number",
+      executedQty: "0",
+      reduceOnly: false,
+      clientOrderId: "manual_buy_existing"
+    }]
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error || "", /open order quantity/i);
+  assert.equal(orderPostCalls, 0);
 });
